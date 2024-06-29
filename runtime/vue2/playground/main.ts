@@ -19,17 +19,28 @@
 import Vue from 'vue';
 
 import Core from '@tmagic/core';
-import { DataSourceManager } from '@tmagic/data-source';
+import { DataSourceManager, DeepObservedData } from '@tmagic/data-source';
 
 import App from './App.vue';
 
 import '@tmagic/utils/resetcss.css';
+
+DataSourceManager.registerObservedData(DeepObservedData);
 
 Promise.all([
   import('../.tmagic/comp-entry'),
   import('../.tmagic/plugin-entry'),
   import('../.tmagic/datasource-entry'),
 ]).then(([components, plugins, dataSources]) => {
+  const app = new Core({
+    ua: window.navigator.userAgent,
+    platform: 'editor',
+  });
+
+  if (app.env.isWeb) {
+    app.setDesignWidth(window.document.documentElement.getBoundingClientRect().width);
+  }
+
   Object.entries(components.default).forEach(([type, component]: [string, any]) => {
     Vue.component(`magic-ui-${type}`, component);
   });
@@ -39,17 +50,8 @@ Promise.all([
   });
 
   Object.values(plugins.default).forEach((plugin: any) => {
-    Vue.use(plugin);
+    Vue.use(plugin, { app });
   });
-
-  const app = new Core({
-    ua: window.navigator.userAgent,
-    platform: 'editor',
-  });
-
-  if (app.env.isWeb) {
-    app.setDesignWidth(window.document.documentElement.getBoundingClientRect().width);
-  }
 
   window.appInstance = app;
 

@@ -1,3 +1,109 @@
+## [1.4.10](https://github.com/Tencent/tmagic-editor/compare/v1.4.9...v1.4.10) (2024-06-28)
+
+
+### Bug Fixes
+
+* **form,design:** 支持行内表单 ([77f13fa](https://github.com/Tencent/tmagic-editor/commit/77f13fa8981c16e9596856e46c8397adee7cf51a))
+* **stage:** 标尺销毁后没有移除对应的dom ([0796799](https://github.com/Tencent/tmagic-editor/commit/079679997aed97bb28c8dc03f53565be93abf3fe)), closes [#617](https://github.com/Tencent/tmagic-editor/issues/617)
+
+
+### Features
+
+* **dats-source,editor,form,schema,ui:** 迭代器容器支持配置子项显示条件 ([a164e2b](https://github.com/Tencent/tmagic-editor/commit/a164e2be62a34bbf4a9896becd738adf72dd2fd4))
+* **editor:** 优化数据源字段选择器交互 ([0ffc223](https://github.com/Tencent/tmagic-editor/commit/0ffc223459c9aee06ba557d13e79f8f21087f726))
+* **editor:** 支持拖拽调整页面顺序 ([0c5485b](https://github.com/Tencent/tmagic-editor/commit/0c5485b1d0c073e19f142e88574f086e695e77c9))
+
+
+
+## [1.4.9](https://github.com/Tencent/tmagic-editor/compare/v1.4.8...v1.4.9) (2024-06-17)
+
+
+
+## [1.4.8](https://github.com/Tencent/tmagic-editor/compare/v1.4.7...v1.4.8) (2024-06-17)
+
+
+### Bug Fixes
+
+* **data-source:** 兼容Promise.allSettled ([7ee7f53](https://github.com/Tencent/tmagic-editor/commit/7ee7f53938c99a47631b5fe1835a13c4bed4c3ed))
+* **data-source:** 多页面时数据源依赖中可能包含其他页面的，导致更新时失败 ([5c43fbf](https://github.com/Tencent/tmagic-editor/commit/5c43fbfd964897a373d29d7e9e60713f1f2209a2))
+* **data-source:** 默认事件处理支持path为空字符串 ([ac7bb93](https://github.com/Tencent/tmagic-editor/commit/ac7bb93a3795d196a201cef93881027bddca2156))
+* **editor,runtime:** 编辑器中，依赖收集改成异步以后，可能出现配置更新了，但是依赖信息还未更新，导致渲染出来的组件不对 ([78e9a0a](https://github.com/Tencent/tmagic-editor/commit/78e9a0ab15d2f68a89f0670818fe77bb81362276))
+* **runtime:** 使用vue-demi cdn ([0cd8382](https://github.com/Tencent/tmagic-editor/commit/0cd83825b783ae54dc9e34868032a4230fb5a6e3))
+* **ui:** overlay销毁需要异常page上的事件 ([094635c](https://github.com/Tencent/tmagic-editor/commit/094635cc0eaa71d1130089c0326bec2a4c62d3a5))
+* **vue-runtime-help:** inject app 无效 ([aa25aa6](https://github.com/Tencent/tmagic-editor/commit/aa25aa6d854f6daf08abb554e490d4a0d21cad8b))
+
+
+### Features
+
+* **editor:** 支持数据源模板输入宽选中文本后编辑（在有数据源变量时还有问题） ([a30e8a3](https://github.com/Tencent/tmagic-editor/commit/a30e8a3eeaf61168eebe1d46cb02b2473228e3e2))
+* **editor:** 组件树中支持多选拖动 ([5ac768f](https://github.com/Tencent/tmagic-editor/commit/5ac768f15be33526dcbec4a69f969e9dcf36cbc5))
+* **editor:** 组件表单配置支持函数 ([9eb99ed](https://github.com/Tencent/tmagic-editor/commit/9eb99ed1768def2817718da3e54d4e8424ee0aaf))
+* **ui,runtime:** vue-runtime-help中添加use-app方法 ([948c194](https://github.com/Tencent/tmagic-editor/commit/948c194a601ec7dbbf433c8165d5bc266e8cc175))
+
+
+
+## [1.4.7](https://github.com/Tencent/tmagic-editor/compare/v1.4.6...v1.4.7) (2024-05-31)
+
+
+### Bug Fixes
+
+* **editor:** 修复pad大屏模式下粘贴位置计算错误偏移问题 ([#612](https://github.com/Tencent/tmagic-editor/issues/612)) ([d98029d](https://github.com/Tencent/tmagic-editor/commit/d98029d5e79c2579bf106d5670c74ad520c17267))
+* **editor:** 已选组件树中如果出现items不是数组会导致节点渲染失败 ([7fb4d96](https://github.com/Tencent/tmagic-editor/commit/7fb4d96cb0c66a8f4c1010764ec2f986abec1cf4))
+* **editor:** 数据源模板输入框输入数字索引后浏览器卡死 ([a66da8d](https://github.com/Tencent/tmagic-editor/commit/a66da8de9e40b76bc6415e0aea6556e07bddf163)), closes [#611](https://github.com/Tencent/tmagic-editor/issues/611)
+* **playground:** tmagic-form样式丢失 ([49e9d5b](https://github.com/Tencent/tmagic-editor/commit/49e9d5b9856dc4e7bd59ef383b9f52b6529db70c)), closes [#610](https://github.com/Tencent/tmagic-editor/issues/610)
+* **ui,runtime:** 迭代器容器迭代数据兼容 ([94db430](https://github.com/Tencent/tmagic-editor/commit/94db430b85e85a98db5eea3f88b490c8c22ed235)), closes [#613](https://github.com/Tencent/tmagic-editor/issues/613)
+
+
+### Features
+
+* **core,editor,form:** 页面片容器支持配置容器内组件的事件 ([2d133f4](https://github.com/Tencent/tmagic-editor/commit/2d133f47f13d8d3ea557e0b14028588cf37884b0))
+* **dep,editor,data-source,schema:** 优化编辑器中依赖收集性能 ([ee26991](https://github.com/Tencent/tmagic-editor/commit/ee269917f8acd7d32a124bc090ba38192e2c8d92))
+* **editor:** 复制组件时收集依赖性能优化改造 ([cd191f6](https://github.com/Tencent/tmagic-editor/commit/cd191f68154e63c0eaceed4e2bd695d4fa25e013))
+* **playground:** 设置配置表单的label-width ([50d238a](https://github.com/Tencent/tmagic-editor/commit/50d238a48cf99961498effb3dc0dc815797d4da9))
+
+
+### Reverts
+
+* Revert "build: 发布时在更版本号后执行reinstall来生成新lock" ([4670ada](https://github.com/Tencent/tmagic-editor/commit/4670adadc005faa658e632ff2245629fbfda76a8))
+
+
+
+## [1.4.6](https://github.com/Tencent/tmagic-editor/compare/v1.4.5...v1.4.6) (2024-05-27)
+
+
+### Bug Fixes
+
+* **editor:** stageOverlay不应受编辑器zoom影响 ([47c4222](https://github.com/Tencent/tmagic-editor/commit/47c42222b317a4a62ba1bbc3e496e5eef085dd0d))
+* **runtime:react:** update page时出错 ([af3f621](https://github.com/Tencent/tmagic-editor/commit/af3f621424cd472c72b54bcdfbed3a4ccc91fd5e))
+* **runtime:** vue runtime App组件中缺失inject ([15e9cdc](https://github.com/Tencent/tmagic-editor/commit/15e9cdc2d6255bb9fe5b9924ab79405ba9c95465))
+
+
+### Features
+
+* **editor,dep:** 支持复制组件时将组件绑定的数据源一并复制 ([faabf1b](https://github.com/Tencent/tmagic-editor/commit/faabf1bb3ad77b6b09498bb7512e3f2d1a7f0a76))
+* **editor:** export FloatingBox ([5ce099c](https://github.com/Tencent/tmagic-editor/commit/5ce099c11d02eb564ce7575922c3f2419d2322df))
+* **runtime:** vue2/vue3公共部分提出到vue-runtime-help中 ([f8dd062](https://github.com/Tencent/tmagic-editor/commit/f8dd062a502766579c6a59df642b89b075a68c1f))
+
+
+
+## [1.4.5](https://github.com/Tencent/tmagic-editor/compare/v1.4.4...v1.4.5) (2024-05-20)
+
+
+### Bug Fixes
+
+* **core,data-source:** 事件参数中关联数据源字段无法自动更新 ([c665bf3](https://github.com/Tencent/tmagic-editor/commit/c665bf3ccc7627f134efb5fe7bc7f53c88ec338c))
+* **editor,stage,utils:** 修复在ipad等大屏场景下编辑画布中元素位置计算偏差问题 ([#598](https://github.com/Tencent/tmagic-editor/issues/598)) ([e39a7d1](https://github.com/Tencent/tmagic-editor/commit/e39a7d140fef9bc00376b84910a78b04b277fae7))
+* **form:** select option label不生效 ([9034cef](https://github.com/Tencent/tmagic-editor/commit/9034cef0d21626472f0b6618aaa5f5355019b9ed))
+* **form:** select option 在没有adapter的时候默认使用el-option ([ad2146f](https://github.com/Tencent/tmagic-editor/commit/ad2146f3bd4df4720bf86fef14e33f1dbbd355de))
+
+
+### Features
+
+* **data-source:** manager init 事件增加error数据 ([708d3db](https://github.com/Tencent/tmagic-editor/commit/708d3db4bbeb2b2512d5c85919b1e738dc55da83))
+* 支持数据源事件 ([#605](https://github.com/Tencent/tmagic-editor/issues/605)) ([88c04c6](https://github.com/Tencent/tmagic-editor/commit/88c04c6dac6ada5bacf30b33b6ed0a7649020fa2))
+
+
+
 ## [1.4.4](https://github.com/Tencent/tmagic-editor/compare/v1.4.3...v1.4.4) (2024-04-16)
 
 

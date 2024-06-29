@@ -25,8 +25,6 @@ import { NodeType } from '@tmagic/schema';
 
 export * from './dom';
 
-dayjs.extend(utc);
-
 export const sleep = (ms: number): Promise<void> =>
   new Promise((resolve) => {
     const timer = setTimeout(() => {
@@ -41,17 +39,17 @@ export const datetimeFormatter = (
   format = 'YYYY-MM-DD HH:mm:ss',
 ): string | number => {
   if (v) {
-    let time = null;
+    let time: string | number;
     if (['x', 'timestamp'].includes(format)) {
       time = dayjs(v).valueOf();
     } else if ((typeof v === 'string' && v.includes('Z')) || v.constructor === Date) {
+      dayjs.extend(utc);
       // UTC字符串时间或Date对象格式化为北京时间
       time = dayjs(v).utcOffset(8).format(format);
     } else {
       time = dayjs(v).format(format);
     }
 
-    // 格式化为北京时间
     if (time !== 'Invalid Date') {
       return time;
     }
@@ -165,9 +163,12 @@ export const guid = (digit = 8): string =>
     return v.toString(16);
   });
 
-export const getValueByKeyPath: any = (keys: string | string[] = '', data: Record<string | number, any> = {}) => {
+export const getValueByKeyPath = (
+  keys: number | string | string[] = '',
+  data: Record<string | number, any> = {},
+): any => {
   // 将 array[0] 转成 array.0
-  const keyArray = Array.isArray(keys) ? keys : keys.replaceAll(/\[(\d+)\]/g, '.$1').split('.');
+  const keyArray = Array.isArray(keys) ? keys : `${keys}`.replaceAll(/\[(\d+)\]/g, '.$1').split('.');
   return keyArray.reduce((accumulator, currentValue: any) => {
     if (isObject(accumulator) || Array.isArray(accumulator)) {
       return accumulator[currentValue];
@@ -177,7 +178,7 @@ export const getValueByKeyPath: any = (keys: string | string[] = '', data: Recor
   }, data);
 };
 
-export const setValueByKeyPath: any = (keys: string, value: any, data: Record<string | number, any> = {}) =>
+export const setValueByKeyPath = (keys: string | number, value: any, data: Record<string | number, any> = {}): any =>
   objectSet(data, keys, value);
 
 export const getNodes = (ids: Id[], data: MNode[] = []): MNode[] => {
@@ -389,6 +390,8 @@ export const getDefaultValueFromFields = (fields: DataSchema[]) => {
 };
 
 export const DATA_SOURCE_FIELDS_SELECT_VALUE_PREFIX = 'ds-field::';
+
+export const DATA_SOURCE_FIELDS_CHANGE_EVENT_PREFIX = 'ds-field-changed';
 
 export const getKeys = Object.keys as <T extends object>(obj: T) => Array<keyof T>;
 

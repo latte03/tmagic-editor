@@ -18,13 +18,15 @@
 
 import type { Component } from 'vue';
 import type EventEmitter from 'events';
+import Sortable, { Options, SortableEvent } from 'sortablejs';
 import type { PascalCasedProperties } from 'type-fest';
 
-import type { ChildConfig, ColumnConfig, FilterFunction, FormConfig, FormItem, Input } from '@tmagic/form';
+import type { ChildConfig, ColumnConfig, FilterFunction, FormConfig, FormItem, FormState, Input } from '@tmagic/form';
 import type {
   CodeBlockContent,
   CodeBlockDSL,
   DataSourceFieldType,
+  DataSourceSchema,
   Id,
   MApp,
   MContainer,
@@ -55,7 +57,6 @@ import type { StageOverlayService } from './services/stageOverlay';
 import type { StorageService } from './services/storage';
 import type { UiService } from './services/ui';
 import type { UndoRedo } from './utils/undo-redo';
-
 export interface FrameworkSlots {
   header(props: {}): any;
   nav(props: {}): any;
@@ -70,6 +71,7 @@ export interface FrameworkSlots {
   'page-bar'(props: {}): any;
   'page-bar-title'(props: { page: MPage | MPageFragment }): any;
   'page-bar-popover'(props: { page: MPage | MPageFragment }): any;
+  'page-list-popover'(props: { list: MPage[] | MPageFragment[] }): any;
 }
 
 export interface WorkspaceSlots {
@@ -150,6 +152,7 @@ export interface StageOptions {
   renderType?: RenderType;
   guidesOptions?: Partial<GuidesOptions>;
   disabledMultiSelect?: boolean;
+  zoom?: number;
 }
 
 export interface StoreState {
@@ -237,6 +240,8 @@ export interface UiState {
   propsPanelSize: 'large' | 'default' | 'small';
   /** 是否显示新增页面按钮 */
   showAddPageButton: boolean;
+  /** 是否在页面工具栏显示呼起页面列表按钮 */
+  showPageListButton: boolean;
   /** 是否隐藏侧边栏 */
   hideSlideBar: boolean;
   /** 侧边栏面板配置 */
@@ -645,17 +650,36 @@ export interface DataSourceMethodSelectConfig extends FormItem {
 
 export interface DataSourceFieldSelectConfig extends FormItem {
   type: 'data-source-field-select';
-  /** 是否要编译成数据源的data。
+  /**
+   * 是否要编译成数据源的data。
    * key: 不编译，就是要数据源id和field name;
    * value: 要编译（数据源data[`${filed}`]）
    * */
   value?: 'key' | 'value';
   /** 是否严格的遵守父子节点不互相关联 */
-  checkStrictly?: boolean;
+  checkStrictly?:
+    | boolean
+    | ((
+        mForm: FormState | undefined,
+        data: {
+          model: Record<any, any>;
+          values: Record<any, any>;
+          parent?: Record<any, any>;
+          formValue: Record<any, any>;
+          prop: string;
+          config: DataSourceFieldSelectConfig;
+          dataSource?: DataSourceSchema;
+        },
+      ) => boolean);
   dataSourceFieldType?: DataSourceFieldType[];
   fieldConfig?: ChildConfig;
   /** 是否可以编辑数据源，disable表示的是是否可以选择数据源 */
   notEditable?: boolean | FilterFunction;
+}
+
+export interface CondOpSelectConfig extends FormItem {
+  type: 'cond-op';
+  parentFields?: string[];
 }
 
 /** 可新增的数据源类型选项 */
@@ -742,4 +766,15 @@ export interface EventBus extends EventEmitter {
     listener: (...args: Param) => void,
   ): this;
   emit<Name extends keyof EventBusEvent, Param extends EventBusEvent[Name]>(eventName: Name, ...args: Param): boolean;
+}
+
+export type PropsFormConfigFunction = (data: { editorService: EditorService }) => FormConfig;
+export type PropsFormValueFunction = (data: { editorService: EditorService }) => Partial<MNode>;
+
+export type PartSortableOptions = Omit<Options, 'onStart' | 'onUpdate'>;
+export interface PageBarSortOptions extends PartSortableOptions {
+  /** 在onUpdate之后调用 */
+  afterUpdate: (event: SortableEvent, sortable: Sortable) => void;
+  /** 在onStart之前调用 */
+  beforeStart: (event: SortableEvent, sortable: Sortable) => void;
 }

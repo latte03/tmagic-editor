@@ -1,5 +1,4 @@
 import type { EventOption } from '@tmagic/core';
-import type { CustomTargetOptions } from '@tmagic/dep';
 import type { FormConfig, FormState } from '@tmagic/form';
 import type { DataSourceSchema, Id, MApp, MNode } from '@tmagic/schema';
 import StageCore, {
@@ -18,6 +17,7 @@ import type {
   MenuBarData,
   MenuButton,
   MenuComponent,
+  PageBarSortOptions,
   SideBarData,
   StageRect,
 } from './type';
@@ -70,8 +70,6 @@ export interface EditorProps {
   codeOptions?: { [key: string]: any };
   /** 禁用鼠标左键按下时就开始拖拽，需要先选中再可以拖拽 */
   disabledDragStart?: boolean;
-  /** 自定义依赖收集器，复制组件时会将关联依赖一并复制 */
-  collectorOptions?: CustomTargetOptions;
   /** 标尺配置 */
   guidesOptions?: Partial<GuidesOptions>;
   /** 禁止多选 */
@@ -93,6 +91,8 @@ export interface EditorProps {
   /** 用于自定义组件树与画布的右键菜单 */
   customContentMenu?: (menus: (MenuButton | MenuComponent)[], type: string) => (MenuButton | MenuComponent)[];
   extendFormState?: (state: FormState) => Record<string, any> | Promise<Record<string, any>>;
+  /** 页面顺序拖拽配置参数 */
+  pageBarSortOptions?: PageBarSortOptions;
 }
 
 export const defaultEditorProps = {

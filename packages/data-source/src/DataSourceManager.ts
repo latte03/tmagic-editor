@@ -20,15 +20,18 @@ import EventEmitter from 'events';
 
 import { cloneDeep } from 'lodash-es';
 
-import type { AppCore, DataSourceSchema, Id, MNode } from '@tmagic/schema';
+import type { AppCore, DataSourceSchema, DisplayCond, Id, MNode } from '@tmagic/schema';
 import { compiledNode } from '@tmagic/utils';
 
+import { SimpleObservedData } from './observed-data/SimpleObservedData';
 import { DataSource, HttpDataSource } from './data-sources';
-import type { ChangeEvent, DataSourceManagerData, DataSourceManagerOptions } from './types';
-import { compiledNodeField, compliedConditions, compliedIteratorItems } from './utils';
+import type { ChangeEvent, DataSourceManagerData, DataSourceManagerOptions, ObservedDataClass } from './types';
+import { compiledNodeField, compliedConditions, compliedIteratorItemConditions, compliedIteratorItems } from './utils';
 
 class DataSourceManager extends EventEmitter {
   private static dataSourceClassMap = new Map<string, typeof DataSource>();
+  // eslint-disable-next-line @typescript-eslint/naming-convention
+  private static ObservedDataClass: ObservedDataClass = SimpleObservedData;
 
   public static register<T extends typeof DataSource = typeof DataSource>(type: string, dataSource: T) {
     DataSourceManager.dataSourceClassMap.set(type, dataSource);
@@ -43,6 +46,10 @@ class DataSourceManager extends EventEmitter {
 
   public static getDataSourceClass(type: string) {
     return DataSourceManager.dataSourceClassMap.get(type);
+  }
+
+  public static registerObservedData(ObservedDataClass: ObservedDataClass) {
+    DataSourceManager.ObservedDataClass = ObservedDataClass;
   }
 
   public app: AppCore;
@@ -67,18 +74,32 @@ class DataSourceManager extends EventEmitter {
     });
 
     const dataSourceList = Array.from(this.dataSourceMap);
-    Promise.allSettled<Record<string, any>>(dataSourceList.map(([, ds]) => this.init(ds))).then((values) => {
-      const data: DataSourceManagerData = {};
 
-      values.forEach((value, index) => {
-        if (value.status === 'fulfilled') {
+    if (typeof Promise.allSettled === 'function') {
+      Promise.allSettled<Record<string, any>>(dataSourceList.map(([, ds]) => this.init(ds))).then((values) => {
+        const data: DataSourceManagerData = {};
+        const errors: Record<string, Error> = {};
+
+        values.forEach((value, index) => {
           const dsId = dataSourceList[index][0];
-          data[dsId] = this.data[dsId];
-        }
-      });
+          if (value.status === 'fulfilled') {
+            data[dsId] = this.data[dsId];
+          } else if (value.status === 'rejected') {
+            errors[dsId] = value.reason;
+          }
+        });
 
-      this.emit('init', data);
-    });
+        this.emit('init', data, errors);
+      });
+    } else {
+      Promise.all<Record<string, any>>(dataSourceList.map(([, ds]) => this.init(ds)))
+        .then(() => {
+          this.emit('init', this.data);
+        })
+        .catch(() => {
+          this.emit('init', this.data);
+        });
+    }
   }
 
   public async init(ds: DataSource) {
@@ -130,6 +151,7 @@ class DataSourceManager extends EventEmitter {
       request: this.app.request,
       useMock: this.useMock,
       initialData: this.data[config.id],
+      ObservedDataClass: DataSourceManager.ObservedDataClass,
     });
 
     this.dataSourceMap.set(config.id, ds);
@@ -192,6 +214,10 @@ class DataSourceManager extends EventEmitter {
     return compliedConditions(node, this.data);
   }
 
+  public compliedIteratorItemConds(itemData: any, displayConds: DisplayCond[] = []) {
+    return compliedIteratorItemConditions(displayConds, itemData);
+  }
+
   public compliedIteratorItems(itemData: any, items: MNode[], dataSourceField: string[] = []) {
     const [dsId, ...keys] = dataSourceField;
     const ds = this.get(dsId);
@@ -206,6 +232,14 @@ class DataSourceManager extends EventEmitter {
       ds.destroy();
     });
     this.dataSourceMap.clear();
+  }
+
+  public onDataChange(id: string, path: string, callback: (newVal: any) => void) {
+    return this.get(id)?.onDataChange(path, callback);
+  }
+
+  public offDataChange(id: string, path: string, callback: (newVal: any) => void) {
+    return this.get(id)?.offDataChange(path, callback);
   }
 }
 

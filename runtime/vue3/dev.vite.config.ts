@@ -38,6 +38,7 @@ export default defineConfig({
       { find: /^@tmagic\/dep/, replacement: path.join(__dirname, '../../packages/dep/src/index.ts') },
       { find: /^@data-source/, replacement: path.join(__dirname, '../../packages/data-source/src') },
       { find: /^@tmagic\/schema/, replacement: path.join(__dirname, '../../packages/schema/src/index.ts') },
+      { find: /^@tmagic\/vue-runtime-help/, replacement: path.join(__dirname, '../vue-runtime-help/src/index.ts') },
     ],
   },
 
@@ -47,25 +48,13 @@ export default defineConfig({
 
   publicDir: 'public',
 
+  optimizeDeps: {
+    exclude: ['vue-demi'],
+  },
+
   server: {
     host: '0.0.0.0',
     port: 8078,
     strictPort: true,
-  },
-
-  build: {
-    sourcemap: true,
-
-    cssCodeSplit: false,
-
-    rollupOptions: {
-      input: {
-        page: './page/index.html',
-        playground: './playground/index.html',
-      },
-      output: {
-        entryFileNames: 'assets/[name].js',
-      },
-    },
   },
 });
