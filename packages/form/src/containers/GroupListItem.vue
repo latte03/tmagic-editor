@@ -1,30 +1,102 @@
 <template>
-  <div class="m-fields-group-list-item">
-    <div>
-      <TMagicButton link :disabled="disabled" @click="expandHandler">
-        <TMagicIcon><CaretBottom v-if="expand" /><CaretRight v-else /></TMagicIcon>{{ title }}
-      </TMagicButton>
+  <TMagicCard class="m-fields-group-list-item" :flat="config.flat" :body-style="{ display: expand ? 'block' : 'none' }">
+    <template #header>
+      <div class="m-fields-group-list-item-header">
+        <TMagicButton link :disabled="disabled" @click="expandHandler" class="expand-button">
+          <TMagicIcon><ArrowDown v-if="expand" /><ArrowRight v-else /></TMagicIcon>
+        </TMagicButton>
 
-      <TMagicButton
-        v-show="showDelete(parseInt(String(index)))"
-        style="color: #f56c6c"
-        link
-        :icon="Delete"
-        :disabled="disabled"
-        @click="removeHandler"
-      ></TMagicButton>
+        <div class="m-fields-group-list-item-title">
+          <slot name="title" :model="model" :index="index" :last-values="lastValues" :prop="rowProp" :title="title">
+            <span v-html="title"></span>
+          </slot>
+        </div>
+        <div class="m-fields-group-list-item-actions">
+          <TMagicButton
+            v-if="copyable && !isCompare"
+            link
+            size="default"
+            type="primary"
+            :icon="DocumentCopy"
+            :disabled="disabled"
+            @click="copyHandler"
+            >复制</TMagicButton
+          >
 
-      <template v-if="movable()">
-        <TMagicButton v-show="index !== 0" link :disabled="disabled" size="small" @click="changeOrder(-1)"
-          >上移<TMagicIcon><CaretTop /></TMagicIcon
-        ></TMagicButton>
-        <TMagicButton v-show="index !== length - 1" :disabled="disabled" link size="small" @click="changeOrder(1)"
-          >下移<TMagicIcon><CaretBottom /></TMagicIcon
-        ></TMagicButton>
-      </template>
+          <template v-if="movable && !isCompare">
+            <TMagicButton
+              v-show="index !== 0"
+              link
+              size="default"
+              :disabled="disabled"
+              :icon="Top"
+              @click="changeOrder(-1)"
+              >上移</TMagicButton
+            >
+            <TMagicButton
+              v-show="index !== length - 1"
+              link
+              size="default"
+              :disabled="disabled"
+              :icon="Bottom"
+              @click="changeOrder(1)"
+              >下移</TMagicButton
+            >
+          </template>
 
-      <span v-if="itemExtra" v-html="itemExtra" class="m-form-tip"></span>
-    </div>
+          <TMagicPopover
+            v-if="config.moveSpecifyLocation && !isCompare"
+            trigger="click"
+            placement="top"
+            width="200"
+            :visible="moveSpecifyLocationVisible"
+          >
+            <template #reference>
+              <TMagicButton
+                link
+                size="small"
+                type="primary"
+                :icon="Position"
+                :disabled="disabled"
+                @click="moveSpecifyLocationVisible = true"
+                >移动至</TMagicButton
+              >
+            </template>
+            <div>
+              <div>
+                第<TMagicInputNumber
+                  style="margin: 0 5px"
+                  v-model="moveSpecifyLocationIndex"
+                  size="small"
+                  :min="1"
+                  :disabled="disabled"
+                ></TMagicInputNumber
+                >行
+              </div>
+              <div style="text-align: right; margin-top: 20px">
+                <TMagicButton size="small" text @click="moveSpecifyLocationVisible = false">取消</TMagicButton>
+                <TMagicButton size="small" type="primary" @click="moveSpecifyLocationHandler">确认</TMagicButton>
+              </div>
+            </div>
+          </TMagicPopover>
+
+          <!-- v-if 必须挂在 Tooltip 上：子节点为 false 时 ElOnlyChild 会报 no valid child node found -->
+          <TMagicTooltip v-if="!isCompare" :content="`删除 ${title}`">
+            <TMagicButton
+              v-show="showDelete"
+              size="default"
+              link
+              class="delete-button"
+              :icon="Delete"
+              :disabled="disabled"
+              @click="removeHandler"
+            ></TMagicButton>
+          </TMagicTooltip>
+
+          <span v-if="itemExtra" v-html="itemExtra" class="m-form-tip"></span>
+        </div>
+      </div>
+    </template>
 
     <Container
       v-if="expand"
@@ -33,23 +105,25 @@
       :lastValues="lastValues"
       :is-compare="isCompare"
       :labelWidth="labelWidth"
-      :prop="`${prop}${prop ? '.' : ''}${String(index)}`"
+      :labelPosition="labelPosition"
+      :prop="rowProp"
       :size="size"
       :disabled="disabled"
       @change="changeHandler"
       @addDiffCount="onAddDiffCount()"
     ></Container>
-  </div>
+  </TMagicCard>
 </template>
 
 <script setup lang="ts">
 import { computed, inject, ref } from 'vue';
-import { CaretBottom, CaretRight, CaretTop, Delete } from '@element-plus/icons-vue';
+import { ArrowDown, ArrowRight, Bottom, Delete, DocumentCopy, Position, Top } from '@element-plus/icons-vue';
 
-import { TMagicButton, TMagicIcon } from '@tmagic/design';
+import { TMagicButton, TMagicCard, TMagicIcon, TMagicInputNumber, TMagicPopover, TMagicTooltip } from '@tmagic/design';
 
-import { FormState, GroupListConfig } from '../schema';
-import { filterFunction } from '../utils/form';
+import type { ContainerChangeEventData, FormState, GroupListConfig } from '../schema';
+import { appendProp, filterFunction } from '../utils/form';
+import { getGroupListRowConfig } from '../utils/tableGroupList';
 
 import Container from './Container.vue';
 
@@ -64,28 +138,30 @@ const props = defineProps<{
   groupModel: any[];
   config: GroupListConfig;
   labelWidth?: string;
+  labelPosition?: 'top' | 'left' | 'right';
   prop?: string;
   size?: string;
   index: number;
   disabled?: boolean;
 }>();
 
-const emit = defineEmits(['swap-item', 'remove-item', 'change', 'addDiffCount']);
+const emit = defineEmits(['swap-item', 'remove-item', 'change', 'addDiffCount', 'copy-item']);
 
 const mForm = inject<FormState | undefined>('mForm');
-const expand = ref(props.config.expandAll || !props.index);
 
-const rowConfig = computed(() => ({
-  type: 'row',
-  span: props.config.span || 24,
-  items: props.config.items,
-  labelWidth: props.config.labelWidth,
-  [mForm?.keyProp || '__key']: `${props.config[mForm?.keyProp || '__key']}${String(props.index)}`,
-}));
+const defaultExpandQuantity = props.config.defaultExpandQuantity ?? 7;
+const expand = ref(props.config.expandAll || defaultExpandQuantity > props.index);
+
+const rowConfig = computed(() => getGroupListRowConfig(props.config, props.index, mForm?.keyProp));
+
+const rowProp = computed(() => appendProp(props.prop, props.index));
 
 const title = computed(() => {
   if (props.config.titleKey && props.model[props.config.titleKey]) {
-    return props.model[props.config.titleKey];
+    const { titlePrefix } = props.config;
+    return titlePrefix
+      ? `${titlePrefix} ${String(props.index + 1)}: ${props.model[props.config.titleKey]}`
+      : `${props.model[props.config.titleKey]}`;
   }
 
   if (props.config.title) {
@@ -103,25 +179,27 @@ const itemExtra = computed(() => filterFunction(mForm, props.config.itemExtra, p
 
 const removeHandler = () => emit('remove-item', props.index);
 
-const changeHandler = () => emit('change');
+const changeHandler = (v: any, eventData: ContainerChangeEventData) => {
+  emit('change', props.model, eventData);
+};
 
 const expandHandler = () => {
   expand.value = !expand.value;
 };
 
 // 希望支持单行可控制是否显示删除按钮，不会影响现有逻辑
-const showDelete = (index: number) => {
+const showDelete = computed(() => {
   const deleteFunc = props.config.delete;
   if (deleteFunc && typeof deleteFunc === 'function') {
-    return deleteFunc(props.model, index, mForm?.values);
+    return deleteFunc(props.model, props.index, mForm?.values);
   }
   return true;
-};
+});
 
 // 调换顺序
 const changeOrder = (offset = 0) => emit('swap-item', props.index, props.index + offset);
 
-const movable = () => {
+const movable = computed(() => {
   const { movable } = props.config;
 
   // 没有设置时，默认可移动
@@ -130,6 +208,20 @@ const movable = () => {
     return movable(mForm, props.index || 0, props.model, props.groupModel);
   }
   return movable;
-};
+});
+
+const copyable = computed(() => filterFunction<boolean>(mForm, props.config.copyable, props));
 const onAddDiffCount = () => emit('addDiffCount');
+
+const copyHandler = () => {
+  emit('copy-item', props.index);
+};
+
+const moveSpecifyLocationVisible = ref(false);
+const moveSpecifyLocationIndex = ref(1);
+
+const moveSpecifyLocationHandler = () => {
+  moveSpecifyLocationVisible.value = false;
+  emit('swap-item', props.index, moveSpecifyLocationIndex.value - 1);
+};
 </script>

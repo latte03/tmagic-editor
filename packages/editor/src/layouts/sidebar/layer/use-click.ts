@@ -1,19 +1,24 @@
-import { computed, type ComputedRef, nextTick, type Ref, ref } from 'vue';
+import { computed, type ComputedRef, nextTick, type Ref, type ShallowRef } from 'vue';
 import { throttle } from 'lodash-es';
 
-import { Id, MNode } from '@tmagic/schema';
+import { Id, MNode } from '@tmagic/core';
+import { getElById, isPageOrFragment } from '@tmagic/utils';
 
-import { LayerNodeStatus, Services, TreeNodeData, UI_SELECT_MODE_EVENT_NAME } from '@editor/type';
+import type { LayerNodeStatus, Services, TreeNodeData } from '@editor/type';
+import { UI_SELECT_MODE_EVENT_NAME } from '@editor/utils/const';
 import { updateStatus } from '@editor/utils/tree';
 
 import LayerMenu from './LayerMenu.vue';
 
 export const useClick = (
-  services: Services | undefined,
+  { editorService, stageOverlayService, uiService }: Services,
   isCtrlKeyDown: Ref<boolean>,
   nodeStatusMap: ComputedRef<Map<Id, LayerNodeStatus> | undefined>,
+  menuRef: ShallowRef<InstanceType<typeof LayerMenu> | null>,
 ) => {
-  const isMultiSelect = computed(() => isCtrlKeyDown.value && !services?.editorService.get('disabledMultiSelect'));
+  const isMultiSelect = computed(
+    () => !editorService.get('disabledMultiSelect') && (isCtrlKeyDown.value || editorService.get('alwaysMultiSelect')),
+  );
 
   // 触发画布选中
   const select = async (data: MNode) => {
@@ -24,20 +29,28 @@ export const useClick = (
     if (isMultiSelect.value) {
       multiSelect(data);
     } else {
-      await services?.editorService.select(data);
-      services?.editorService.get('stage')?.select(data.id);
-      services?.stageOverlayService.get('stage')?.select(data.id);
+      await editorService.select(data);
+      editorService.get('stage')?.select(data.id);
+      stageOverlayService.get('stage')?.select(data.id);
     }
   };
 
   const multiSelect = async (data: MNode) => {
-    const nodes = services?.editorService.get('nodes') || [];
+    if (isPageOrFragment(data)) {
+      return;
+    }
+
+    const nodes = editorService.get('nodes') || [];
 
     const newNodes: Id[] = [];
     let isCancel = false;
     nodes.forEach((node) => {
       if (node.id === data.id) {
         isCancel = true;
+        return;
+      }
+
+      if (isPageOrFragment(node)) {
         return;
       }
 
@@ -49,28 +62,44 @@ export const useClick = (
       newNodes.push(data.id);
     }
 
-    await services?.editorService.multiSelect(newNodes);
-    services?.editorService.get('stage')?.multiSelect(newNodes);
-    services?.stageOverlayService.get('stage')?.multiSelect(newNodes);
+    await editorService.multiSelect(newNodes);
+    editorService.get('stage')?.multiSelect(newNodes);
+    stageOverlayService.get('stage')?.multiSelect(newNodes);
   };
 
   const throttleTime = 300;
   // 鼠标在组件树移动触发高亮
-  const highlightHandler = throttle((event: MouseEvent, data: TreeNodeData) => {
-    highlight(data);
-  }, throttleTime);
+  const highlightHandler: (event: MouseEvent, data: TreeNodeData) => void = throttle(
+    (event: MouseEvent, data: TreeNodeData) => {
+      highlight(data);
+    },
+    throttleTime,
+  );
 
   // 触发画布高亮
   const highlight = (data: TreeNodeData) => {
-    services?.editorService?.highlight(data);
-    services?.editorService?.get('stage')?.highlight(data.id);
-    services?.stageOverlayService?.get('stage')?.highlight(data.id);
+    editorService.highlight(data);
+    editorService.get('stage')?.highlight(data.id);
+    stageOverlayService.get('stage')?.highlight(data.id);
   };
 
-  const nodeClickHandler = (event: MouseEvent, data: TreeNodeData) => {
+  const isNodeCanSelect = async (data: TreeNodeData) => {
+    const canSelect = stageOverlayService.get('stageOptions')?.canSelect;
+    if (!canSelect) return true;
+
+    const doc = editorService.get('stage')?.renderer?.contentWindow?.document;
+    if (!doc) return true;
+
+    const el = getElById()(doc, data.id);
+    if (!el) return true;
+
+    return Boolean(await canSelect(el));
+  };
+
+  const nodeClickHandler = (event: MouseEvent, data: TreeNodeData): void => {
     if (!nodeStatusMap?.value) return;
 
-    if (services?.uiService.get('uiSelectMode')) {
+    if (uiService.get('uiSelectMode')) {
       document.dispatchEvent(new CustomEvent(UI_SELECT_MODE_EVENT_NAME, { detail: data }));
       return;
     }
@@ -81,28 +110,43 @@ export const useClick = (
       });
     }
 
-    nextTick(() => {
+    nextTick(async () => {
+      if (!(await isNodeCanSelect(data))) return;
+
       select(data);
     });
   };
 
-  // 右键菜单
-  const menu = ref<InstanceType<typeof LayerMenu>>();
+  const nodeDblclickHandler = (event: MouseEvent, data: TreeNodeData): void => {
+    if (!nodeStatusMap?.value) return;
+
+    if (uiService.get('uiSelectMode')) return;
+
+    // 双击切换展开/收起状态
+    if (data.items && data.items.length > 0) {
+      const status = nodeStatusMap.value.get(data.id);
+      updateStatus(nodeStatusMap.value, data.id, {
+        expand: !status?.expand,
+      });
+    }
+  };
 
   return {
-    menu,
+    menuRef,
 
     nodeClickHandler,
 
-    nodeContentMenuHandler(event: MouseEvent, data: TreeNodeData) {
+    nodeDblclickHandler,
+
+    nodeContentMenuHandler(event: MouseEvent, data: TreeNodeData): void {
       event.preventDefault();
 
-      const nodes = services?.editorService.get('nodes') || [];
+      const nodes = editorService.get('nodes') || [];
       if (nodes.length < 2 || !nodes.includes(data)) {
         nodeClickHandler(event, data);
       }
 
-      menu.value?.show(event);
+      menuRef.value?.show(event);
     },
 
     highlightHandler,

@@ -1,7 +1,7 @@
 /*
  * Tencent is pleased to support the open source community by making TMagicEditor available.
  *
- * Copyright (C) 2023 THL A29 Limited, a Tencent company.  All rights reserved.
+ * Copyright (C) 2025 Tencent.  All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,20 +16,25 @@
  * limitations under the License.
  */
 
-import { beforeAll, describe, expect, test } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from 'vitest';
 import { cloneDeep } from 'lodash-es';
 
-import type { MApp } from '@tmagic/schema';
-import { NodeType } from '@tmagic/schema';
+import type { MApp, MContainer, MNode } from '@tmagic/core';
+import { NodeType } from '@tmagic/core';
+import { getNodePath } from '@tmagic/utils';
 
 import editorService from '@editor/services/editor';
 import historyService from '@editor/services/history';
 import storageService from '@editor/services/storage';
-import { COPY_STORAGE_KEY, setConfig } from '@editor/utils';
+import type { EditorChangeEvent } from '@editor/type';
+import { COPY_STORAGE_KEY, setEditorConfig } from '@editor/utils';
 
-setConfig({
+setEditorConfig({
   // eslint-disable-next-line no-eval
   parseDSL: (dsl: string) => eval(dsl),
+  customCreateMonacoEditor: (monaco, codeEditorEl, options) => monaco.editor.create(codeEditorEl, options),
+  customCreateMonacoDiffEditor: (monaco, codeEditorEl, options) =>
+    monaco.editor.createDiffEditor(codeEditorEl, options),
 });
 
 // mock window.localStage
@@ -124,6 +129,23 @@ describe('get', () => {
   });
 });
 
+describe('multiSelect 标志位', () => {
+  test('disabledMultiSelect 默认值为 false', () => {
+    expect(editorService.get('disabledMultiSelect')).toBe(false);
+  });
+
+  test('alwaysMultiSelect 默认值为 false', () => {
+    expect(editorService.get('alwaysMultiSelect')).toBe(false);
+  });
+
+  test('alwaysMultiSelect 可被 set 修改并通过 get 读取', () => {
+    editorService.set('alwaysMultiSelect', true);
+    expect(editorService.get('alwaysMultiSelect')).toBe(true);
+    editorService.set('alwaysMultiSelect', false);
+    expect(editorService.get('alwaysMultiSelect')).toBe(false);
+  });
+});
+
 describe('getNodeInfo', () => {
   beforeAll(() => editorService.set('root', cloneDeep(root)));
 
@@ -170,6 +192,130 @@ describe('getParentById', () => {
   });
 });
 
+describe('getNodeInfo 当前页面优先 / 跨页面回退', () => {
+  // 两个页面，page2 内含一个容器及其子节点，用于覆盖「优先当前页面、回退跳过当前页面」逻辑
+  const PAGE2_ID = 20;
+  const NODE_IN_PAGE2 = 21;
+  const CONTAINER_IN_PAGE2 = 22;
+  const CHILD_IN_PAGE2 = 23;
+  const multiPageRoot: MApp = {
+    id: NodeId.ROOT_ID,
+    type: NodeType.ROOT,
+    items: [
+      cloneDeep(root.items[0]),
+      {
+        id: PAGE2_ID,
+        type: NodeType.PAGE,
+        layout: 'absolute',
+        style: { width: 375 },
+        items: [
+          { id: NODE_IN_PAGE2, type: 'text', style: {} },
+          {
+            id: CONTAINER_IN_PAGE2,
+            type: 'container',
+            style: {},
+            items: [{ id: CHILD_IN_PAGE2, type: 'text', style: {} }],
+          },
+        ],
+      },
+    ],
+  };
+
+  beforeAll(async () => {
+    editorService.set('root', cloneDeep(multiPageRoot));
+    // 当前停留在 page1
+    await editorService.select(NodeId.PAGE_ID);
+  });
+
+  test('id 为 root.id 时返回 root 自身，parent / page 为 null', () => {
+    const info = editorService.getNodeInfo(NodeId.ROOT_ID);
+    expect(info.node?.id).toBe(NodeId.ROOT_ID);
+    expect(info.parent).toBeNull();
+    expect(info.page).toBeNull();
+  });
+
+  test('当前页面节点本身：node 为页面、parent 为 root、page 为页面自身', () => {
+    const info = editorService.getNodeInfo(NodeId.PAGE_ID);
+    expect(info.node?.id).toBe(NodeId.PAGE_ID);
+    expect(info.parent?.id).toBe(NodeId.ROOT_ID);
+    expect(info.page?.id).toBe(NodeId.PAGE_ID);
+  });
+
+  test('命中当前页面内的节点（快速路径）', () => {
+    const info = editorService.getNodeInfo(NodeId.NODE_ID);
+    expect(info.node?.id).toBe(NodeId.NODE_ID);
+    expect(info.parent?.id).toBe(NodeId.PAGE_ID);
+    expect(info.page?.id).toBe(NodeId.PAGE_ID);
+  });
+
+  test('命中非当前页面内的深层节点（回退跳过当前页面），parent / page 正确', () => {
+    const info = editorService.getNodeInfo(CHILD_IN_PAGE2);
+    expect(info.node?.id).toBe(CHILD_IN_PAGE2);
+    expect(info.parent?.id).toBe(CONTAINER_IN_PAGE2);
+    expect(info.page?.id).toBe(PAGE2_ID);
+  });
+
+  test('非当前页面的页面节点：parent 为真实 root（同一引用，可安全 mutate）', () => {
+    const info = editorService.getNodeInfo(PAGE2_ID, false);
+    expect(info.node?.id).toBe(PAGE2_ID);
+    expect(info.page?.id).toBe(PAGE2_ID);
+    // parent 必须是真实 root 引用，而非临时副本，否则对页面增删/排序会改不到真实树
+    expect(info.parent).toBe(editorService.get('root'));
+  });
+
+  test('不存在的节点返回空 info', () => {
+    const info = editorService.getNodeInfo(NodeId.ERROR_NODE_ID);
+    expect(info.node).toBeNull();
+    expect(info.page).toBeNull();
+  });
+
+  test('未选中任何页面时仍能跨页面查找到节点', () => {
+    editorService.set('root', cloneDeep(multiPageRoot));
+    editorService.set('page', null);
+    const info = editorService.getNodeInfo(CHILD_IN_PAGE2);
+    expect(info.node?.id).toBe(CHILD_IN_PAGE2);
+    expect(info.parent?.id).toBe(CONTAINER_IN_PAGE2);
+    expect(info.page?.id).toBe(PAGE2_ID);
+  });
+});
+
+describe('isOnDifferentPage', () => {
+  test('当前未选中任何页面时返回 false', () => {
+    editorService.set('root', cloneDeep(root));
+    editorService.resetState();
+    const pageNode = editorService.getNodeById(NodeId.PAGE_ID)!;
+    expect(editorService.isOnDifferentPage(pageNode)).toBe(false);
+  });
+
+  test('节点在当前页面内时返回 false', async () => {
+    editorService.set('root', cloneDeep(root));
+    await editorService.select(NodeId.PAGE_ID);
+    const innerNode = editorService.getNodeById(NodeId.NODE_ID)!;
+    expect(editorService.isOnDifferentPage(innerNode)).toBe(false);
+  });
+
+  test('页面节点本身就是当前页面时返回 false', async () => {
+    editorService.set('root', cloneDeep(root));
+    await editorService.select(NodeId.PAGE_ID);
+    const pageNode = editorService.getNodeById(NodeId.PAGE_ID)!;
+    expect(editorService.isOnDifferentPage(pageNode)).toBe(false);
+  });
+
+  test('节点位于非当前页面时返回 true', async () => {
+    editorService.set('root', cloneDeep(root));
+    const rootNode = editorService.get('root');
+    await editorService.select(NodeId.PAGE_ID);
+    // 加一个新页面
+    const newPage = await editorService.add({ type: NodeType.PAGE }, rootNode, { doNotSwitchPage: true });
+    const newPageId = Array.isArray(newPage) ? newPage[0].id : newPage.id;
+
+    // 当前还在第一个页面
+    expect(editorService.get('page')?.id).toBe(NodeId.PAGE_ID);
+    const newPageNode = editorService.getNodeById(newPageId)!;
+    expect(editorService.isOnDifferentPage(newPageNode)).toBe(true);
+  });
+});
+
 describe('select', () => {
   beforeAll(() => editorService.set('root', cloneDeep(root)));
 
@@ -194,12 +340,12 @@ describe('select', () => {
     expect(page?.id).toBe(NodeId.PAGE_ID);
   });
 
-  test.skip('参数是id undefined', () => {
-    expect(() => editorService.select(NodeId.ERROR_NODE_ID)).toThrowError('获取不到组件信息');
+  test('参数是id undefined', async () => {
+    await expect(editorService.select(NodeId.ERROR_NODE_ID)).rejects.toThrowError('获取不到组件信息');
   });
 
-  test.skip('参数是config 没有id', () => {
-    expect(() => editorService.select({ id: '', type: 'text' })).toThrowError('没有ID，无法选中');
+  test('参数是config 没有id', async () => {
+    await expect(editorService.select({ id: '', type: 'text' })).rejects.toThrowError('没有ID，无法选中');
   });
 });
 
@@ -253,18 +399,134 @@ describe('add', () => {
     expect(rootNode?.items.length).toBe(2);
   });
 
-  test.skip('往root下添加普通节点', () => {
+  test('往root下添加普通节点', async () => {
     editorService.set('root', cloneDeep(root));
     // 根节点下只能加页面
     const rootNode = editorService.get('root');
-    expect(() =>
+    await expect(
       editorService.add(
         {
           type: 'text',
         },
         rootNode,
       ),
-    ).toThrowError('app下不能添加组件');
+    ).rejects.toThrowError('app下不能添加组件');
+  });
+
+  test('doNotSelect: true 不更新选中节点', async () => {
+    editorService.set('root', cloneDeep(root));
+    await editorService.select(NodeId.NODE_ID);
+    const beforeNodeId = editorService.get('node')?.id;
+    expect(beforeNodeId).toBe(NodeId.NODE_ID);
+
+    const newNode = await editorService.add({ type: 'text' }, null, { doNotSelect: true });
+
+    // 节点已被添加到 dsl
+    const addedId = Array.isArray(newNode) ? newNode[0].id : newNode.id;
+    const parentInfo = editorService.getParentById(addedId);
+    expect(parentInfo?.items).toHaveLength(3);
+
+    // 但当前选中节点保持原状（未自动选中新增节点）
+    expect(editorService.get('node')?.id).toBe(beforeNodeId);
+  });
+
+  test('doNotSelect: true 连续多次 add 保持插入顺序', async () => {
+    editorService.set('root', cloneDeep(root));
+    await editorService.select(NodeId.NODE_ID);
+
+    const first = await editorService.add({ type: 'text' }, null, { doNotSelect: true });
+    const second = await editorService.add({ type: 'text' }, null, { doNotSelect: true });
+    const firstId = Array.isArray(first) ? first[0].id : first.id;
+    const secondId = Array.isArray(second) ? second[0].id : second.id;
+
+    const parent = editorService.getParentById(firstId);
+    const ids = parent?.items.map((item) => item.id);
+    // 应紧接在原选中节点之后，且先后顺序不被后一次 splice 颠倒
+    expect(ids).toEqual([NodeId.NODE_ID, firstId, secondId, NodeId.NODE_ID2]);
+    expect(editorService.get('node')?.id).toBe(NodeId.NODE_ID);
+  });
+
+  test('批量 add 多个节点时按传入顺序插入', async () => {
+    editorService.set('root', cloneDeep(root));
+    await editorService.select(NodeId.NODE_ID);
+
+    const added = await editorService.add(
+      [
+        { id: 'batch-a', type: 'text', style: {} },
+        { id: 'batch-b', type: 'text', style: {} },
+        { id: 'batch-c', type: 'text', style: {} },
+      ],
+      null,
+      { doNotSelect: true },
+    );
+
+    expect(Array.isArray(added)).toBe(true);
+    const parent = editorService.getParentById('batch-a');
+    expect(parent?.items.map((item) => item.id)).toEqual([
+      NodeId.NODE_ID,
+      'batch-a',
+      'batch-b',
+      'batch-c',
+      NodeId.NODE_ID2,
+    ]);
+  });
+
+  test('插件注册异步 beforeDoAdd 时批量 add 仍按顺序插入', async () => {
+    editorService.set('root', cloneDeep(root));
+    await editorService.select(NodeId.NODE_ID);
+
+    // beforeDoAdd 是公开插件钩子，异步实现会让 doAdd 在插入节点前先让出线程；
+    // 这里刻意让耗时递减，插入顺序不能依赖钩子的返回快慢
+    const delays = [30, 20, 10];
+    let callIndex = 0;
+    const beforeDoAdd = async (...args: any[]) => {
+      const delay = delays[callIndex] ?? 0;
+      callIndex += 1;
+      await new Promise((resolve) => setTimeout(resolve, delay));
+      return args;
+    };
+    editorService.usePlugin({ beforeDoAdd });
+
+    try {
+      await editorService.add(
+        [
+          { id: 'hook-a', type: 'text', style: {} },
+          { id: 'hook-b', type: 'text', style: {} },
+          { id: 'hook-c', type: 'text', style: {} },
+        ] as MNode[],
+        null,
+        { doNotSelect: true },
+      );
+
+      const parent = editorService.getParentById('hook-a');
+      expect(parent?.items.map((item) => item.id)).toEqual([
+        NodeId.NODE_ID,
+        'hook-a',
+        'hook-b',
+        'hook-c',
+        NodeId.NODE_ID2,
+      ]);
+    } finally {
+      editorService.removePlugin({ beforeDoAdd });
+    }
+  });
+
+  test('doNotSwitchPage: true 新增页面时保持当前页面不切换', async () => {
+    editorService.set('root', cloneDeep(root));
+    await editorService.select(NodeId.PAGE_ID);
+    const beforePageId = editorService.get('page')?.id;
+    expect(beforePageId).toBe(NodeId.PAGE_ID);
+
+    const rootNode = editorService.get('root');
+    const newPage = await editorService.add({ type: NodeType.PAGE }, rootNode, { doNotSwitchPage: true });
+
+    // 新页面已加入 dsl
+    const addedId = Array.isArray(newPage) ? newPage[0].id : newPage.id;
+    expect(editorService.getNodeById(addedId)).toBeTruthy();
+    expect(rootNode?.items.length).toBe(2);
+
+    // 当前 page 保持不变（没有自动切到新加的页面）
+    expect(editorService.get('page')?.id).toBe(beforePageId);
   });
 });
 
@@ -293,19 +555,279 @@ describe('remove', () => {
     expect(rootNode?.items.length).toBe(1);
   });
 
-  test.skip('undefine', async () => {
-    expect(() => editorService.remove({ id: NodeId.ERROR_NODE_ID, type: 'text' })).toThrow();
+  test('undefine', async () => {
+    await expect(editorService.remove({ id: NodeId.ERROR_NODE_ID, type: 'text' })).rejects.toThrow();
+  });
+
+  test('doNotSelect: true 不更新选中节点', async () => {
+    editorService.set('root', cloneDeep(root));
+    // 选中 NODE_ID，删除另外一个 NODE_ID2
+    await editorService.select(NodeId.NODE_ID);
+    const beforeNodeId = editorService.get('node')?.id;
+    expect(beforeNodeId).toBe(NodeId.NODE_ID);
+
+    await editorService.remove({ id: NodeId.NODE_ID2, type: 'text' }, { doNotSelect: true });
+
+    // 节点已被删除
+    expect(editorService.getNodeById(NodeId.NODE_ID2)).toBeNull();
+    // 当前选中节点保持原状（未自动选中父节点）
+    expect(editorService.get('node')?.id).toBe(beforeNodeId);
+  });
+
+  test('被删除节点正好是当前选中节点时，state 强制移除引用', async () => {
+    editorService.set('root', cloneDeep(root));
+    // 选中 NODE_ID 后再删除 NODE_ID 自身
+    await editorService.select(NodeId.NODE_ID);
+    expect(editorService.get('node')?.id).toBe(NodeId.NODE_ID);
+
+    // 即使 doNotSelect: true，被删除节点正好是当前选中节点时，state 也必须移除引用
+    await editorService.remove({ id: NodeId.NODE_ID, type: 'text' }, { doNotSelect: true });
+
+    // 节点已删除
+    expect(editorService.getNodeById(NodeId.NODE_ID)).toBeNull();
+    // state.nodes 中不再包含被删除的节点
+    expect(editorService.get('nodes').some((n) => n.id === NodeId.NODE_ID)).toBe(false);
+  });
+
+  test('doNotSwitchPage: true 删除当前页面后不自动切到其它页面', async () => {
+    editorService.set('root', cloneDeep(root));
+    const rootNode = editorService.get('root');
+    // 先加一个页面，确保 root 下有 2 个页面
+    await editorService.select(NodeId.PAGE_ID);
+    const newPage = await editorService.add({ type: NodeType.PAGE }, rootNode);
+    expect(rootNode?.items.length).toBe(2);
+
+    // 选中第一个页面，作为当前页面
+    await editorService.select(NodeId.PAGE_ID);
+    expect(editorService.get('page')?.id).toBe(NodeId.PAGE_ID);
+
+    // 删除当前页面，并要求不切换页面
+    await editorService.remove({ id: NodeId.PAGE_ID, type: NodeType.PAGE }, { doNotSwitchPage: true });
+
+    // 被删除页面在 dsl 中确实已不存在
+    expect(editorService.getNodeById(NodeId.PAGE_ID)).toBeNull();
+    // 当前 page 引用被清空，不会被自动切到剩余页面
+    expect(editorService.get('page')).toBeNull();
+    // 仍保留 newPage 在 dsl 中
+    const addedId = Array.isArray(newPage) ? newPage[0].id : newPage.id;
+    expect(editorService.getNodeById(addedId)).toBeTruthy();
+  });
+
+  test('默认删除当前页面后会自动切到剩余首个页面', async () => {
+    editorService.set('root', cloneDeep(root));
+    const rootNode = editorService.get('root');
+    // 先加一个页面
+    await editorService.select(NodeId.PAGE_ID);
+    const newPage = await editorService.add({ type: NodeType.PAGE }, rootNode);
+    const addedId = Array.isArray(newPage) ? newPage[0].id : newPage.id;
+    expect(rootNode?.items.length).toBe(2);
+
+    // 选中第一个页面作为当前页面
+    await editorService.select(NodeId.PAGE_ID);
+
+    // 删除当前页面，使用默认行为
+    await editorService.remove({ id: NodeId.PAGE_ID, type: NodeType.PAGE });
+
+    // 被删除页面在 dsl 中已不存在
+    expect(editorService.getNodeById(NodeId.PAGE_ID)).toBeNull();
+    // 自动切到剩余首个页面
+    expect(editorService.get('page')?.id).toBe(addedId);
+  });
+
+  test('默认删除当前页面并自动切页时，不会先把 page 置为 null', async () => {
+    editorService.set('root', cloneDeep(root));
+    const rootNode = editorService.get('root');
+    await editorService.select(NodeId.PAGE_ID);
+    const newPage = await editorService.add({ type: NodeType.PAGE }, rootNode);
+    const addedId = Array.isArray(newPage) ? newPage[0].id : newPage.id;
+
+    await editorService.select(NodeId.PAGE_ID);
+
+    const pageValues: Array<MNode | null> = [];
+    const originalSet = editorService.set.bind(editorService);
+    const setSpy = vi.spyOn(editorService, 'set').mockImplementation((name, value, options) => {
+      if (name === 'page') {
+        pageValues.push(value as MNode | null);
+      }
+      return originalSet(name, value, options);
+    });
+
+    try {
+      await editorService.remove({ id: NodeId.PAGE_ID, type: NodeType.PAGE });
+    } finally {
+      setSpy.mockRestore();
+    }
+
+    expect(pageValues.some((page) => page === null)).toBe(false);
+    expect(editorService.get('page')?.id).toBe(addedId);
+  });
+
+  test('删除非当前页面时保持当前页选中，不强制切到首个页面', async () => {
+    editorService.set('root', cloneDeep(root));
+    const rootNode = editorService.get('root');
+    await editorService.select(NodeId.PAGE_ID);
+    const newPage = await editorService.add({ type: NodeType.PAGE }, rootNode);
+    const addedId = Array.isArray(newPage) ? newPage[0].id : newPage.id;
+
+    await editorService.select(NodeId.PAGE_ID);
+    expect(editorService.get('page')?.id).toBe(NodeId.PAGE_ID);
+
+    await editorService.remove({ id: addedId, type: NodeType.PAGE });
+
+    expect(editorService.getNodeById(addedId)).toBeNull();
+    expect(editorService.get('page')?.id).toBe(NodeId.PAGE_ID);
+  });
+
+  test('删除最后一个页面后退回选中 root', async () => {
+    editorService.set('root', cloneDeep(root));
+    const rootNode = editorService.get('root');
+    await editorService.select(NodeId.PAGE_ID);
+    expect(rootNode?.items.length).toBe(1);
+
+    await editorService.remove({ id: NodeId.PAGE_ID, type: NodeType.PAGE });
+
+    expect(rootNode?.items.length).toBe(0);
+    expect(editorService.get('page')).toBeNull();
+    // root 下已无页面，编辑器应回到「选中 root」状态，而不是什么都没选中
+    expect(editorService.get('nodes')).toEqual([rootNode]);
+    expect(editorService.get('parent')).toBeNull();
+  });
+
+  describe('与画布的调用顺序', () => {
+    const createStageStub = () => {
+      const calls: string[] = [];
+      return {
+        calls,
+        stage: {
+          remove: vi.fn(() => {
+            calls.push('remove');
+            return Promise.resolve();
+          }),
+          select: vi.fn(() => {
+            calls.push('select');
+            return Promise.resolve();
+          }),
+        },
+      };
+    };
+
+    afterEach(() => {
+      editorService.set('stage', null);
+    });
+
+    test('删除当前页面时先把画布切到剩余页面，再通知画布删除', async () => {
+      editorService.set('root', cloneDeep(root));
+      const rootNode = editorService.get('root');
+      await editorService.select(NodeId.PAGE_ID);
+      const newPage = await editorService.add({ type: NodeType.PAGE }, rootNode);
+      const addedId = Array.isArray(newPage) ? newPage[0].id : newPage.id;
+      await editorService.select(NodeId.PAGE_ID);
+
+      const { calls, stage } = createStageStub();
+      editorService.set('stage', stage as any);
+
+      await editorService.remove({ id: NodeId.PAGE_ID, type: NodeType.PAGE });
+
+      // runtime 删除 page 时会销毁当前渲染的实例，必须切页在前，否则画布会被清空
+      expect(calls).toEqual(['select', 'remove']);
+      expect(stage.select).toHaveBeenCalledWith(addedId);
+      expect(editorService.get('page')?.id).toBe(addedId);
+    });
+
+    test('删除当前页面片时同样先切页再通知画布删除', async () => {
+      editorService.set('root', cloneDeep(root));
+      const rootNode = editorService.get('root');
+      await editorService.select(NodeId.PAGE_ID);
+      const fragment = await editorService.add({ type: NodeType.PAGE_FRAGMENT }, rootNode);
+      const fragmentId = Array.isArray(fragment) ? fragment[0].id : fragment.id;
+      // 新增页面片后当前页已切到页面片
+      expect(editorService.get('page')?.id).toBe(fragmentId);
+
+      const { calls, stage } = createStageStub();
+      editorService.set('stage', stage as any);
+
+      await editorService.remove({ id: fragmentId, type: NodeType.PAGE_FRAGMENT });
+
+      expect(calls).toEqual(['select', 'remove']);
+      expect(editorService.get('page')?.id).toBe(NodeId.PAGE_ID);
+    });
+
+    test('删除普通节点时先通知画布删除，再选中父节点', async () => {
+      editorService.set('root', cloneDeep(root));
+      await editorService.select(NodeId.NODE_ID);
+
+      const { calls, stage } = createStageStub();
+      editorService.set('stage', stage as any);
+
+      await editorService.remove({ id: NodeId.NODE_ID, type: 'text' });
+
+      expect(calls).toEqual(['remove', 'select']);
+      expect(stage.select).toHaveBeenCalledWith(NodeId.PAGE_ID);
+    });
+
+    test('删除最后一个页面时在 Stage 卸载前发出删除通知', async () => {
+      editorService.set('root', cloneDeep(root));
+      await editorService.select(NodeId.PAGE_ID);
+
+      const { calls, stage } = createStageStub();
+      editorService.set('stage', stage as any);
+
+      await editorService.remove({ id: NodeId.PAGE_ID, type: NodeType.PAGE });
+
+      // page 置空会让 Workspace 卸载 Stage，删除通知必须在这之前发出
+      expect(calls).toEqual(['remove']);
+      // selectRoot 会顺带清掉 stage 引用
+      expect(editorService.get('stage')).toBeNull();
+    });
   });
 });
 
 describe('update', () => {
-  beforeAll(() => editorService.set('root', cloneDeep(root)));
+  beforeAll(() => {
+    editorService.set('root', cloneDeep(root));
+
+    // dist 版 getNodeInfo 尚未返回 path，测试中手动补齐以匹配 toggleFixedPosition 入参
+    const originalGetNodeInfo = editorService.getNodeInfo.bind(editorService);
+    editorService.getNodeInfo = (id, raw = true) => {
+      const info = originalGetNodeInfo(id, raw);
+      if (!Array.isArray(info.path) && info.node) {
+        const appRoot = editorService.get('root');
+        if (appRoot && `${id}` !== `${appRoot.id}`) {
+          const path = getNodePath(id, appRoot.items) as MNode[];
+          if (path.length) {
+            path.unshift(appRoot as unknown as MNode);
+            info.path = path;
+          } else {
+            info.path = [];
+          }
+        } else {
+          info.path = [];
+        }
+      }
+      return info;
+    };
+  });
 
   test('正常', async () => {
     await editorService.select(NodeId.PAGE_ID);
     await editorService.update({ id: NodeId.NODE_ID, type: 'text', text: 'text' });
     const node = editorService.getNodeById(NodeId.NODE_ID);
     expect(node?.text).toBe('text');
+  });
+
+  test('replace=true 时整节点替换，不 merge 保留旧字段', async () => {
+    editorService.set('root', cloneDeep(root));
+    await editorService.select(NodeId.PAGE_ID);
+
+    // 默认 merge：未传入的 style.width 会保留
+    await editorService.update({ id: NodeId.NODE_ID, type: 'text', text: 'merged' });
+    expect(editorService.getNodeById(NodeId.NODE_ID)?.style?.width).toBe(270);
+
+    // replace：直接用传入配置覆盖，旧字段（style）被去掉
+    await editorService.update({ id: NodeId.NODE_ID, type: 'text', text: 'replaced' }, { replace: true });
+    const node = editorService.getNodeById(NodeId.NODE_ID);
+    expect(node?.text).toBe('replaced');
+    expect(node?.style).toBeUndefined();
   });
 
   test('没有id', async () => {
@@ -345,6 +867,54 @@ describe('update', () => {
     const node2 = editorService.getNodeById(NodeId.NODE_ID);
     expect(node2?.style?.position).toBe('absolute');
   });
+
+  test('被更新节点正好是当前选中节点时，state.node 始终与 dsl 同步', async () => {
+    editorService.set('root', cloneDeep(root));
+    await editorService.select(NodeId.NODE_ID);
+
+    await editorService.update({ id: NodeId.NODE_ID, type: 'text', text: 'updated-text' });
+
+    // dsl 已更新
+    expect(editorService.getNodeById(NodeId.NODE_ID)?.text).toBe('updated-text');
+    // state.node 引用同步到新节点，不会持有过期数据
+    expect(editorService.get('node')?.text).toBe('updated-text');
+  });
+
+  test('更新非选中节点时，不影响当前选中列表', async () => {
+    editorService.set('root', cloneDeep(root));
+    await editorService.select(NodeId.NODE_ID);
+    const beforeSelected = editorService.get('node');
+
+    // 更新另一个非选中节点
+    await editorService.update({ id: NodeId.NODE_ID2, type: 'text', text: 'other-text' });
+
+    // dsl 已更新
+    expect(editorService.getNodeById(NodeId.NODE_ID2)?.text).toBe('other-text');
+    // 原选中节点引用不被错误替换（修复 splice(-1) 误改最后一个选中项的旧 bug）
+    expect(editorService.get('node')?.id).toBe(NodeId.NODE_ID);
+    expect(editorService.get('node')).toBe(beforeSelected);
+  });
+
+  test('更新非当前页面时，不会把编辑器切到该页', async () => {
+    editorService.set('root', cloneDeep(root));
+    const rootNode = editorService.get('root');
+    // 先加一个新页面
+    await editorService.select(NodeId.PAGE_ID);
+    const newPage = await editorService.add({ type: NodeType.PAGE }, rootNode);
+    const newPageId = Array.isArray(newPage) ? newPage[0].id : newPage.id;
+
+    // 选中第一个页面作为当前页
+    await editorService.select(NodeId.PAGE_ID);
+    expect(editorService.get('page')?.id).toBe(NodeId.PAGE_ID);
+
+    // 更新非当前页面（newPage）的配置
+    await editorService.update({ id: newPageId, type: NodeType.PAGE, name: 'page-renamed' });
+
+    // dsl 中该页已更新
+    expect(editorService.getNodeById(newPageId)?.name).toBe('page-renamed');
+    // 当前 page 没有被切走
+    expect(editorService.get('page')?.id).toBe(NodeId.PAGE_ID);
+  });
 });
 
 describe('sort', () => {
@@ -358,6 +928,19 @@ describe('sort', () => {
     parent = editorService.get('parent');
     expect(parent?.items[0].id).toBe(NodeId.NODE_ID2);
   });
+
+  test('doNotSelect: true 完成排序且不触发额外 select', async () => {
+    editorService.set('root', cloneDeep(root));
+    await editorService.select(NodeId.NODE_ID2);
+    const parentBefore = editorService.get('parent');
+    expect(parentBefore?.items[0].id).toBe(NodeId.NODE_ID);
+
+    await editorService.sort(NodeId.NODE_ID2, NodeId.NODE_ID, { doNotSelect: true });
+
+    // dsl 顺序已更新
+    const parentAfter = editorService.getParentById(NodeId.NODE_ID2);
+    expect(parentAfter?.items[0].id).toBe(NodeId.NODE_ID2);
+  });
 });
 
 describe('copy', () => {
@@ -370,6 +953,44 @@ describe('copy', () => {
   });
 });
 
+describe('paste', () => {
+  test('doNotSelect: true 不更新选中节点', async () => {
+    editorService.set('root', cloneDeep(root));
+    await editorService.select(NodeId.NODE_ID);
+
+    const sourceNode = editorService.getNodeById(NodeId.NODE_ID2);
+    await editorService.copy(sourceNode!);
+
+    const beforeNodeId = editorService.get('node')?.id;
+    expect(beforeNodeId).toBe(NodeId.NODE_ID);
+
+    const pasted = await editorService.paste({}, undefined, { doNotSelect: true });
+
+    // 粘贴成功
+    expect(pasted).toBeTruthy();
+    // 当前选中节点保持原状
+    expect(editorService.get('node')?.id).toBe(beforeNodeId);
+  });
+
+  test('doNotSwitchPage: true 粘贴页面时不切换当前页面', async () => {
+    editorService.set('root', cloneDeep(root));
+    await editorService.select(NodeId.PAGE_ID);
+
+    // 复制当前页面
+    const pageNode = editorService.getNodeById(NodeId.PAGE_ID);
+    await editorService.copy(pageNode!);
+    const beforePageId = editorService.get('page')?.id;
+    expect(beforePageId).toBe(NodeId.PAGE_ID);
+
+    const pasted = await editorService.paste({}, undefined, { doNotSwitchPage: true });
+
+    // 粘贴成功
+    expect(pasted).toBeTruthy();
+    // 当前 page 保持不变
+    expect(editorService.get('page')?.id).toBe(beforePageId);
+  });
+});
+
 describe('moveLayer', () => {
   beforeAll(() => editorService.set('root', cloneDeep(root)));
 
@@ -379,6 +1000,226 @@ describe('moveLayer', () => {
     const parent = editorService.get('parent');
     await editorService.moveLayer(1);
     expect(parent?.items[0].id).toBe(NodeId.NODE_ID2);
+  });
+});
+
+describe('change 事件', () => {
+  // 取出最后一次 change 事件的回调参数
+  const lastChangeEvent = (fn: ReturnType<typeof vi.fn>): EditorChangeEvent =>
+    fn.mock.calls[fn.mock.calls.length - 1][0];
+
+  test('add 触发 change：type 为 add，data 携带新增 node 及其所属 page', async () => {
+    editorService.set('root', cloneDeep(root));
+    await editorService.select(NodeId.PAGE_ID);
+
+    const fn = vi.fn();
+    editorService.on('change', fn);
+    const newNode = await editorService.add({ type: 'text' });
+    editorService.off('change', fn);
+
+    expect(fn).toHaveBeenCalledTimes(1);
+    const event = lastChangeEvent(fn);
+    expect(event.type).toBe('add');
+    expect(event.data).toHaveLength(1);
+    const addedId = Array.isArray(newNode) ? newNode[0].id : newNode.id;
+    expect(event.data[0].node.id).toBe(addedId);
+    // 新增节点归属于当前页面
+    expect(event.data[0].page?.id).toBe(NodeId.PAGE_ID);
+  });
+
+  test('remove 触发 change：type 为 remove，data 携带被删 node 及删除前所属 page', async () => {
+    editorService.set('root', cloneDeep(root));
+    await editorService.select(NodeId.PAGE_ID);
+
+    const fn = vi.fn();
+    editorService.on('change', fn);
+    await editorService.remove({ id: NodeId.NODE_ID, type: 'text' });
+    editorService.off('change', fn);
+
+    const event = lastChangeEvent(fn);
+    expect(event.type).toBe('remove');
+    expect(event.data).toHaveLength(1);
+    expect(event.data[0].node.id).toBe(NodeId.NODE_ID);
+    // 删除前捕获，page 仍能正确反查到
+    expect(event.data[0].page?.id).toBe(NodeId.PAGE_ID);
+  });
+
+  test('update 触发 change：type 为 update，data.node 携带 newNode / oldNode', async () => {
+    editorService.set('root', cloneDeep(root));
+    await editorService.select(NodeId.PAGE_ID);
+
+    const fn = vi.fn();
+    editorService.on('change', fn);
+    await editorService.update({ id: NodeId.NODE_ID, type: 'text', text: 'changed' });
+    editorService.off('change', fn);
+
+    const event = lastChangeEvent(fn);
+    expect(event.type).toBe('update');
+    if (event.type === 'update') {
+      expect(event.data[0].node.newNode.id).toBe(NodeId.NODE_ID);
+      expect(event.data[0].node.newNode.text).toBe('changed');
+      expect(event.data[0].node.oldNode.id).toBe(NodeId.NODE_ID);
+      expect(event.data[0].page?.id).toBe(NodeId.PAGE_ID);
+    }
+  });
+
+  test('moveLayer 触发 change：type 为 move-layer，并携带 offset', async () => {
+    editorService.set('root', cloneDeep(root));
+    await editorService.select(NodeId.NODE_ID);
+
+    const fn = vi.fn();
+    editorService.on('change', fn);
+    await editorService.moveLayer(1);
+    editorService.off('change', fn);
+
+    const event = lastChangeEvent(fn);
+    expect(event.type).toBe('move-layer');
+    if (event.type === 'move-layer') {
+      expect(event.offset).toBe(1);
+      expect(event.data[0].node.id).toBe(NodeId.NODE_ID);
+      expect(event.data[0].page?.id).toBe(NodeId.PAGE_ID);
+    }
+  });
+
+  test('dragTo 触发 change：type 为 drag-to，并携带 targetIndex / targetParent', async () => {
+    editorService.set('root', cloneDeep(root));
+    await editorService.select(NodeId.PAGE_ID);
+    const page = editorService.get('page') as unknown as MContainer;
+
+    const fn = vi.fn();
+    editorService.on('change', fn);
+    await editorService.dragTo({ id: NodeId.NODE_ID2, type: 'text' }, page, 0);
+    editorService.off('change', fn);
+
+    const event = lastChangeEvent(fn);
+    expect(event.type).toBe('drag-to');
+    if (event.type === 'drag-to') {
+      expect(event.targetIndex).toBe(0);
+      expect(event.targetParent.id).toBe(NodeId.PAGE_ID);
+      expect(event.data[0].node.id).toBe(NodeId.NODE_ID2);
+      expect(event.data[0].page?.id).toBe(NodeId.PAGE_ID);
+    }
+  });
+
+  test('change 事件携带历史来源 historySource，未传时为 undefined', async () => {
+    editorService.set('root', cloneDeep(root));
+    await editorService.select(NodeId.PAGE_ID);
+    const page = editorService.get('page') as unknown as MContainer;
+
+    const fn = vi.fn();
+    editorService.on('change', fn);
+
+    // update
+    await editorService.update({ id: NodeId.NODE_ID, type: 'text', text: 'source' }, { historySource: 'props' });
+    expect(lastChangeEvent(fn).historySource).toBe('props');
+
+    // moveLayer
+    await editorService.select(NodeId.NODE_ID);
+    await editorService.moveLayer(1, { historySource: 'stage' });
+    expect(lastChangeEvent(fn).historySource).toBe('stage');
+
+    // dragTo
+    await editorService.select(NodeId.PAGE_ID);
+    await editorService.dragTo({ id: NodeId.NODE_ID2, type: 'text' }, page, 0, { historySource: 'stage' });
+    expect(lastChangeEvent(fn).historySource).toBe('stage');
+
+    // add
+    const newNode = (await editorService.add({ type: 'text' }, undefined, {
+      historySource: 'component-panel',
+    })) as MNode;
+    expect(lastChangeEvent(fn).historySource).toBe('component-panel');
+
+    // remove
+    await editorService.remove(newNode, { historySource: 'shortcut' });
+    expect(lastChangeEvent(fn).historySource).toBe('shortcut');
+
+    // 未传 historySource 时为 undefined
+    await editorService.update({ id: NodeId.NODE_ID, type: 'text', text: 'no-source' });
+    expect(lastChangeEvent(fn).historySource).toBeUndefined();
+
+    // doNotPushHistory 透传：true 表示本次变更未写入历史记录，缺省为 false
+    await editorService.update({ id: NodeId.NODE_ID, type: 'text', text: 'no-history' }, { doNotPushHistory: true });
+    expect(lastChangeEvent(fn).doNotPushHistory).toBe(true);
+    await editorService.update({ id: NodeId.NODE_ID, type: 'text', text: 'with-history' });
+    expect(lastChangeEvent(fn).doNotPushHistory).toBe(false);
+
+    editorService.off('change', fn);
+  });
+
+  test('撤销/重做触发的 change 事件携带被应用 step 的 source', async () => {
+    historyService.reset();
+    editorService.set('root', cloneDeep(root));
+    await editorService.select(NodeId.PAGE_ID);
+
+    await editorService.update({ id: NodeId.NODE_ID, type: 'text', text: 'undo-source' }, { historySource: 'props' });
+
+    const fn = vi.fn();
+    editorService.on('change', fn);
+
+    await editorService.undo();
+    expect(lastChangeEvent(fn).historySource).toBe('props');
+
+    await editorService.redo();
+    expect(lastChangeEvent(fn).historySource).toBe('props');
+
+    editorService.off('change', fn);
+  });
+
+  test('撤销 remove：重新插回节点时触发 change（type 为 add，携带 step source）', async () => {
+    historyService.reset();
+    editorService.set('root', cloneDeep(root));
+    await editorService.select(NodeId.PAGE_ID);
+
+    await editorService.remove({ id: NodeId.NODE_ID, type: 'text' }, { historySource: 'shortcut' });
+    expect(editorService.getNodeById(NodeId.NODE_ID)).toBeNull();
+
+    const fn = vi.fn();
+    editorService.on('change', fn);
+    await editorService.undo();
+    editorService.off('change', fn);
+
+    // 节点已按 step 记录的位置插回
+    expect(editorService.getNodeById(NodeId.NODE_ID)?.id).toBe(NodeId.NODE_ID);
+    const events = fn.mock.calls.map((call) => call[0]) as EditorChangeEvent[];
+    const addEvent = events.find((e) => e.type === 'add');
+    expect(addEvent).toBeTruthy();
+    expect(addEvent?.historySource).toBe('shortcut');
+    // 撤销/重做补发的事件不写入历史记录
+    expect(addEvent?.doNotPushHistory).toBe(true);
+    if (addEvent?.type === 'add') {
+      expect(addEvent.data[0].node.id).toBe(NodeId.NODE_ID);
+      expect(addEvent.data[0].page?.id).toBe(NodeId.PAGE_ID);
+    }
+  });
+
+  test('重做 add：重新插入节点时触发 change（type 为 add，携带 step source）', async () => {
+    historyService.reset();
+    editorService.set('root', cloneDeep(root));
+    await editorService.select(NodeId.PAGE_ID);
+
+    const newNode = (await editorService.add({ type: 'text' }, undefined, {
+      historySource: 'component-panel',
+    })) as MNode;
+    // 撤销 add，使节点从 DSL 中移除
+    await editorService.undo();
+    expect(editorService.getNodeById(newNode.id)).toBeNull();
+
+    const fn = vi.fn();
+    editorService.on('change', fn);
+    await editorService.redo();
+    editorService.off('change', fn);
+
+    // 节点已重新插入
+    expect(editorService.getNodeById(newNode.id)?.id).toBe(newNode.id);
+    const events = fn.mock.calls.map((call) => call[0]) as EditorChangeEvent[];
+    const addEvent = events.find((e) => e.type === 'add');
+    expect(addEvent).toBeTruthy();
+    expect(addEvent?.historySource).toBe('component-panel');
+    // 撤销/重做补发的事件不写入历史记录
+    expect(addEvent?.doNotPushHistory).toBe(true);
+    if (addEvent?.type === 'add') {
+      expect(addEvent.data[0].node.id).toBe(newNode.id);
+    }
   });
 });
 
@@ -400,5 +1241,370 @@ describe('undo redo', () => {
     await editorService.redo();
     const redoNode = editorService.getNodeById(NodeId.NODE_ID);
     expect(redoNode?.id).toBeUndefined();
+  });
+
+  test('update 携带 changeRecords 时，undo/redo 仅回滚/重做对应 propPath，不冲掉同节点其它字段', async () => {
+    editorService.set('root', cloneDeep(root));
+    historyService.reset();
+
+    await editorService.select(NodeId.PAGE_ID);
+    // 先携带 changeRecords 改 width
+    await editorService.update(
+      { id: NodeId.NODE_ID, type: 'text', style: { width: 500 } },
+      { changeRecords: [{ propPath: 'style.width', value: 500 }] },
+    );
+    expect(editorService.getNodeById(NodeId.NODE_ID)?.style?.width).toBe(500);
+
+    // 在 undo 之前再追加一个不入历史的字段（模拟"同节点上其它无关变更"），undo 不应把它冲掉
+    await editorService.update(
+      { id: NodeId.NODE_ID, type: 'text', style: { width: 500, height: 80 } },
+      { doNotPushHistory: true },
+    );
+    expect(editorService.getNodeById(NodeId.NODE_ID)?.style?.height).toBe(80);
+
+    await editorService.undo();
+    const afterUndo = editorService.getNodeById(NodeId.NODE_ID);
+    // width 回退；height 因为不在 changeRecords 内不会被局部 patch 覆盖
+    expect(afterUndo?.style?.width).toBe(270);
+    expect(afterUndo?.style?.height).toBe(80);
+
+    await editorService.redo();
+    const afterRedo = editorService.getNodeById(NodeId.NODE_ID);
+    expect(afterRedo?.style?.width).toBe(500);
+    expect(afterRedo?.style?.height).toBe(80);
+  });
+
+  test('update 不带 changeRecords 时退化为整节点替换', async () => {
+    editorService.set('root', cloneDeep(root));
+    historyService.reset();
+
+    await editorService.select(NodeId.PAGE_ID);
+    await editorService.update({ id: NodeId.NODE_ID, type: 'text', style: { width: 600 } });
+    expect(editorService.getNodeById(NodeId.NODE_ID)?.style?.width).toBe(600);
+
+    await editorService.undo();
+    expect(editorService.getNodeById(NodeId.NODE_ID)?.style?.width).toBe(270);
+  });
+});
+
+describe('*AndGetHistoryId', () => {
+  const lastStepUuid = () => {
+    const list = historyService.getStepList('page', editorService.get('page')?.id);
+    return list[list.length - 1]?.step.uuid;
+  };
+
+  test('addAndGetHistoryId 返回本次写入历史记录的 uuid，且与栈顶 step 一致', async () => {
+    editorService.set('root', cloneDeep(root));
+    historyService.reset();
+    await editorService.select(NodeId.PAGE_ID);
+
+    const { result, historyIds } = await editorService.addAndGetHistoryId({ type: 'text' });
+    expect(result).toBeTruthy();
+    expect(historyIds).toHaveLength(1);
+    expect(historyIds[0]).toBeTruthy();
+    expect(historyIds[0]).toBe(lastStepUuid());
+  });
+
+  test('addAndGetHistoryId 传 doNotPushHistory 时返回空数组', async () => {
+    editorService.set('root', cloneDeep(root));
+    historyService.reset();
+    await editorService.select(NodeId.PAGE_ID);
+
+    const { historyIds } = await editorService.addAndGetHistoryId({ type: 'text' }, null, { doNotPushHistory: true });
+    expect(historyIds).toEqual([]);
+  });
+
+  test('updateAndGetHistoryId 返回本次写入历史记录的 uuid', async () => {
+    editorService.set('root', cloneDeep(root));
+    historyService.reset();
+    await editorService.select(NodeId.PAGE_ID);
+
+    const { result, historyIds } = await editorService.updateAndGetHistoryId({
+      id: NodeId.NODE_ID,
+      type: 'text',
+      text: 'x',
+    });
+    expect(result).toBeTruthy();
+    expect(historyIds).toHaveLength(1);
+    expect(historyIds[0]).toBe(lastStepUuid());
+  });
+
+  test('removeAndGetHistoryId 返回本次写入历史记录的 uuid', async () => {
+    editorService.set('root', cloneDeep(root));
+    historyService.reset();
+    await editorService.select(NodeId.PAGE_ID);
+
+    const { historyIds } = await editorService.removeAndGetHistoryId({ id: NodeId.NODE_ID, type: 'text' });
+    expect(historyIds).toHaveLength(1);
+    expect(historyIds[0]).toBe(lastStepUuid());
+  });
+
+  test('moveLayerAndGetHistoryId 返回本次写入历史记录的 uuid', async () => {
+    editorService.set('root', cloneDeep(root));
+    historyService.reset();
+    await editorService.select(NodeId.NODE_ID);
+
+    const { historyIds } = await editorService.moveLayerAndGetHistoryId(1);
+    expect(historyIds).toHaveLength(1);
+    expect(historyIds[0]).toBe(lastStepUuid());
+  });
+});
+
+describe('revertPageStepById', () => {
+  test('通过 uuid 回滚 add 步骤（删除被新增节点）', async () => {
+    editorService.set('root', cloneDeep(root));
+    historyService.reset();
+    await editorService.select(NodeId.PAGE_ID);
+
+    const { historyIds } = await editorService.addAndGetHistoryId({ type: 'text' });
+    const uuid = historyIds[0];
+    expect(typeof uuid).toBe('string');
+
+    const addedStep = historyService
+      .getStepList('page', editorService.get('page')?.id)
+      .find((e) => e.step.uuid === uuid)!.step;
+    const addedId = addedStep.diff[0].newSchema!.id;
+    expect(editorService.getNodeById(addedId)).toBeTruthy();
+
+    const reverted = await editorService.revertPageStepById([uuid!]);
+    expect(reverted[0]).not.toBeNull();
+    // 回滚（git revert 语义）会把被新增的节点删掉
+    expect(editorService.getNodeById(addedId)).toBeNull();
+  });
+
+  test('与按 index 回滚结果一致', async () => {
+    editorService.set('root', cloneDeep(root));
+    historyService.reset();
+    await editorService.select(NodeId.PAGE_ID);
+
+    const { historyIds } = await editorService.addAndGetHistoryId({ type: 'text' });
+    const uuid = historyIds[0];
+    const location = historyService.findStepLocationByUuid('page', uuid!, editorService.get('page')?.id);
+    expect(location?.index).toBeGreaterThanOrEqual(0);
+  });
+
+  test('找不到 uuid 时返回 null', async () => {
+    editorService.set('root', cloneDeep(root));
+    historyService.reset();
+    await editorService.select(NodeId.PAGE_ID);
+
+    expect(await editorService.revertPageStepById(['not-exist'])).toEqual([null]);
+    expect(await editorService.revertPageStepById([''])).toEqual([null]);
+  });
+
+  test('支持传入 uuid 数组并按顺序回滚', async () => {
+    editorService.set('root', cloneDeep(root));
+    historyService.reset();
+    await editorService.select(NodeId.PAGE_ID);
+
+    const { historyIds: ids1 } = await editorService.addAndGetHistoryId({ type: 'text' });
+    const { historyIds: ids2 } = await editorService.addAndGetHistoryId({ type: 'text' });
+    const uuids = [ids1[0]!, ids2[0]!];
+
+    const pageId = editorService.get('page')?.id;
+    const addedId1 = historyService.getStepList('page', pageId).find((e) => e.step.uuid === uuids[0])!.step.diff[0]
+      .newSchema!.id;
+    const addedId2 = historyService.getStepList('page', pageId).find((e) => e.step.uuid === uuids[1])!.step.diff[0]
+      .newSchema!.id;
+
+    const reverted = await editorService.revertPageStepById(uuids);
+    expect(reverted).toHaveLength(2);
+    expect(reverted[0]).not.toBeNull();
+    expect(reverted[1]).not.toBeNull();
+    expect(editorService.getNodeById(addedId1)).toBeNull();
+    expect(editorService.getNodeById(addedId2)).toBeNull();
+  });
+});
+
+describe('invalidNodeIds 校验错误状态', () => {
+  beforeEach(() => {
+    editorService.set('root', cloneDeep(root));
+    editorService.resetInvalidNodeId();
+    historyService.reset();
+  });
+
+  test('初始状态为空 Map', () => {
+    expect(editorService.getInvalidNodeIds()).toBeInstanceOf(Map);
+    expect(editorService.getInvalidNodeIds().size).toBe(0);
+  });
+
+  test('setInvalidNode 记录错误并触发 invalid-node-change 事件', () => {
+    const handler = vi.fn();
+    editorService.on('invalid-node-change', handler);
+
+    editorService.setInvalidNode(NodeId.NODE_ID, 'props', 'name 必填');
+
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(editorService.getInvalidNodeInfo(NodeId.NODE_ID)).toEqual({ props: 'name 必填' });
+
+    editorService.off('invalid-node-change', handler);
+  });
+
+  test('同一节点不同来源(props/style)合并，互不覆盖', () => {
+    editorService.setInvalidNode(NodeId.NODE_ID, 'props', 'props 错误');
+    editorService.setInvalidNode(NodeId.NODE_ID, 'style', 'style 错误');
+
+    expect(editorService.getInvalidNodeInfo(NodeId.NODE_ID)).toEqual({
+      props: 'props 错误',
+      style: 'style 错误',
+    });
+    expect(editorService.getInvalidNodeIds().size).toBe(1);
+  });
+
+  test('deleteInvalidNode 指定来源仅删除该来源，另一来源保留', () => {
+    editorService.setInvalidNode(NodeId.NODE_ID, 'props', 'props 错误');
+    editorService.setInvalidNode(NodeId.NODE_ID, 'style', 'style 错误');
+
+    editorService.deleteInvalidNode(NodeId.NODE_ID, 'props');
+
+    expect(editorService.getInvalidNodeInfo(NodeId.NODE_ID)).toEqual({ style: 'style 错误' });
+  });
+
+  test('deleteInvalidNode 删除最后一个来源时整条记录移除', () => {
+    editorService.setInvalidNode(NodeId.NODE_ID, 'props', 'props 错误');
+    editorService.deleteInvalidNode(NodeId.NODE_ID, 'props');
+
+    expect(editorService.getInvalidNodeInfo(NodeId.NODE_ID)).toBeUndefined();
+    expect(editorService.getInvalidNodeIds().size).toBe(0);
+  });
+
+  test('deleteInvalidNode 不传 source 删除整节点全部来源', () => {
+    editorService.setInvalidNode(NodeId.NODE_ID, 'props', 'props 错误');
+    editorService.setInvalidNode(NodeId.NODE_ID, 'style', 'style 错误');
+
+    editorService.deleteInvalidNode(NodeId.NODE_ID);
+
+    expect(editorService.getInvalidNodeInfo(NodeId.NODE_ID)).toBeUndefined();
+  });
+
+  test('deleteInvalidNode 不存在的节点为空操作，不触发事件', () => {
+    const handler = vi.fn();
+    editorService.on('invalid-node-change', handler);
+
+    editorService.deleteInvalidNode(NodeId.ERROR_NODE_ID);
+
+    expect(handler).not.toHaveBeenCalled();
+    editorService.off('invalid-node-change', handler);
+  });
+
+  test('resetInvalidNodeId 清空全部并触发事件；已空时不触发', () => {
+    editorService.setInvalidNode(NodeId.NODE_ID, 'props', 'props 错误');
+
+    const handler = vi.fn();
+    editorService.on('invalid-node-change', handler);
+
+    editorService.resetInvalidNodeId();
+    expect(editorService.getInvalidNodeIds().size).toBe(0);
+    expect(handler).toHaveBeenCalledTimes(1);
+
+    // 已经为空时再次调用不应触发事件
+    editorService.resetInvalidNodeId();
+    expect(handler).toHaveBeenCalledTimes(1);
+
+    editorService.off('invalid-node-change', handler);
+  });
+
+  test('resetState 清空 invalidNodeIds', () => {
+    editorService.setInvalidNode(NodeId.NODE_ID, 'props', 'props 错误');
+    editorService.resetState();
+    expect(editorService.getInvalidNodeIds().size).toBe(0);
+  });
+
+  test('update 携带 invalidInfo(error) 时在入栈前落库；error 为空时清除', async () => {
+    await editorService.select(NodeId.PAGE_ID);
+
+    await editorService.update(
+      { id: NodeId.NODE_ID, type: 'text', text: 'a' },
+      { invalidInfo: { id: NodeId.NODE_ID, source: 'props', error: '校验失败' } },
+    );
+    expect(editorService.getInvalidNodeInfo(NodeId.NODE_ID)).toEqual({ props: '校验失败' });
+
+    await editorService.update(
+      { id: NodeId.NODE_ID, type: 'text', text: 'b' },
+      { invalidInfo: { id: NodeId.NODE_ID, source: 'props', error: undefined } },
+    );
+    expect(editorService.getInvalidNodeInfo(NodeId.NODE_ID)).toBeUndefined();
+  });
+
+  test('remove 删除节点及其子树的错误记录', async () => {
+    await editorService.select(NodeId.NODE_ID);
+    editorService.setInvalidNode(NodeId.NODE_ID, 'props', 'props 错误');
+
+    const node = editorService.get('node');
+    if (!node) throw new Error('未选中节点');
+    await editorService.remove(node);
+
+    expect(editorService.getInvalidNodeInfo(NodeId.NODE_ID)).toBeUndefined();
+  });
+
+  test('整体替换 root 后清理不存在于新 DSL 的错误记录', () => {
+    editorService.setInvalidNode(NodeId.NODE_ID, 'props', 'props 错误');
+    // 新 DSL 不包含 NODE_ID
+    const newRoot: MApp = {
+      id: NodeId.ROOT_ID,
+      type: NodeType.ROOT,
+      items: [
+        {
+          id: NodeId.PAGE_ID,
+          type: NodeType.PAGE,
+          layout: 'absolute',
+          style: { width: 375 },
+          items: [],
+        },
+      ],
+    };
+    editorService.set('root', cloneDeep(newRoot));
+    expect(editorService.getInvalidNodeInfo(NodeId.NODE_ID)).toBeUndefined();
+  });
+
+  test('历史同步：update 携带错误后 undo 清错、redo 恢复错', async () => {
+    await editorService.select(NodeId.PAGE_ID);
+
+    await editorService.update(
+      { id: NodeId.NODE_ID, type: 'text', text: 'x' },
+      { invalidInfo: { id: NodeId.NODE_ID, source: 'props', error: '校验失败' } },
+    );
+    expect(editorService.getInvalidNodeInfo(NodeId.NODE_ID)).toEqual({ props: '校验失败' });
+
+    // 撤销：还原到「操作前」——错误应消失
+    await editorService.undo();
+    expect(editorService.getInvalidNodeInfo(NodeId.NODE_ID)).toBeUndefined();
+
+    // 重做：还原到「操作后」——错误应恢复
+    await editorService.redo();
+    expect(editorService.getInvalidNodeInfo(NodeId.NODE_ID)).toEqual({ props: '校验失败' });
+  });
+
+  test('历史同步：修复(清除错误)后 undo 恢复错、redo 再次清错', async () => {
+    await editorService.select(NodeId.PAGE_ID);
+
+    // step1：产生错误
+    await editorService.update(
+      { id: NodeId.NODE_ID, type: 'text', text: 'x' },
+      { invalidInfo: { id: NodeId.NODE_ID, source: 'props', error: '校验失败' } },
+    );
+    // step2：修复（清除错误）
+    await editorService.update(
+      { id: NodeId.NODE_ID, type: 'text', text: 'y' },
+      { invalidInfo: { id: NodeId.NODE_ID, source: 'props', error: undefined } },
+    );
+    expect(editorService.getInvalidNodeInfo(NodeId.NODE_ID)).toBeUndefined();
+
+    // 撤销 step2：还原到「修复前」——错误恢复
+    await editorService.undo();
+    expect(editorService.getInvalidNodeInfo(NodeId.NODE_ID)).toEqual({ props: '校验失败' });
+
+    // 重做 step2：错误再次被清除
+    await editorService.redo();
+    expect(editorService.getInvalidNodeInfo(NodeId.NODE_ID)).toBeUndefined();
+  });
+
+  test('update 未携带 invalidInfo 时清除对应节点的全部来源错误', async () => {
+    await editorService.select(NodeId.PAGE_ID);
+    editorService.setInvalidNode(NodeId.NODE_ID, 'props', 'props 错误');
+
+    await editorService.update({ id: NodeId.NODE_ID, type: 'text', text: 'z' });
+
+    expect(editorService.getInvalidNodeInfo(NodeId.NODE_ID)).toBeUndefined();
   });
 });

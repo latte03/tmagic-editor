@@ -1,3 +1,4 @@
+import { require } from '../require';
 import { UserConfig, UserConfigLoader } from '../types';
 
 export const isPlainObject = <T extends Record<any, any> = Record<any, any>>(val: unknown): val is T =>

@@ -1,0 +1,557 @@
+.m-editor-history-list-popover {
+  padding: 0 !important;
+
+  .m-editor-history-list {
+    position: relative;
+    padding: 4px 8px 8px;
+  }
+
+  // 关闭按钮悬浮在 tab 标题同一行（绝对定位，不占布局空间）。
+  // top 对齐容器顶部内边距，height 跟 el-tabs/t-tabs 头部默认高度一致，
+  // 再用 flex 居中让图标与 tab 标题视觉对齐。
+  .m-editor-history-list-close {
+    position: absolute;
+    top: 4px;
+    right: 4px;
+    z-index: 2;
+    display: flex;
+    align-items: center;
+    height: 40px;
+    margin: 0;
+    color: #909399;
+
+    &:hover {
+      color: var(--el-color-primary, #409eff);
+    }
+  }
+
+  .m-editor-history-list-tabs {
+    .el-tabs__header,
+    .t-tabs__header {
+      margin-bottom: 4px;
+    }
+  }
+
+  .m-editor-history-list-empty {
+    padding: 24px 0;
+    text-align: center;
+    color: #909399;
+    font-size: 12px;
+  }
+
+  .m-editor-history-list-ul {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  // 历史列表工具条：放置「清空」等列表级操作，右对齐。
+  .m-editor-history-list-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    padding: 0 4px 4px;
+  }
+
+  // 「清空」按钮：红色文字按钮，强调破坏性操作（点击后会二次确认）。
+  .m-editor-history-list-clear {
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 12px;
+    color: #f56c6c;
+    cursor: pointer;
+    user-select: none;
+
+    &:hover {
+      background-color: rgba(245, 108, 108, 0.12);
+    }
+  }
+
+  .m-editor-history-list-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 8px;
+    border-radius: 4px;
+    font-size: 12px;
+    line-height: 1.4;
+    color: #303133;
+    cursor: default;
+
+    // 合并组（卡片）自己定义了 hover/active 视觉，跳过通用单步 hover 避免色彩叠加
+    &:not(.m-editor-history-list-group.is-merged):hover {
+      background-color: rgba(0, 0, 0, 0.04);
+    }
+
+    &.is-undone {
+      color: #c0c4cc;
+
+      .m-editor-history-list-item-op {
+        opacity: 0.5;
+      }
+    }
+
+    // 当前所在的「单步」记录：左侧蓝条 + 浅蓝底；
+    // 合并组的当前态由 `.is-merged.is-current` 单独覆盖（border-left + 卡片背景），
+    // 故这里仅作用于「非合并组」的单步条目，避免与卡片样式互相干扰。
+    &.is-current:not(.m-editor-history-list-group.is-merged) {
+      background-color: rgba(64, 158, 255, 0.1);
+      box-shadow: inset 2px 0 0 var(--el-color-primary, #409eff);
+
+      &:hover {
+        background-color: rgba(64, 158, 255, 0.16);
+      }
+
+      .m-editor-history-list-item-desc {
+        font-weight: 600;
+        color: var(--el-color-primary, #409eff);
+      }
+    }
+  }
+
+  .m-editor-history-list-group {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0;
+
+    .m-editor-history-list-group-head {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      cursor: default;
+
+      &.is-clickable {
+        cursor: pointer;
+      }
+    }
+
+    .m-editor-history-list-group-toggle {
+      flex: 0 0 auto;
+      width: 16px;
+      text-align: center;
+      color: #909399;
+      font-size: 12px;
+      user-select: none;
+      transition: transform 0.15s ease;
+      pointer-events: none;
+
+      &.is-expanded {
+        transform: rotate(180deg);
+      }
+    }
+
+    // 合并组（≥2 个连续同节点的修改被聚合）需要与单步条目明显区分：
+    // - 左侧 3px 紫色色条暗示「这是一组」；
+    // - 浅紫背景 + 边框把整个组视觉化为一张「卡片」；
+    // - 头部加 padding，避免和单步条目混在一起难以辨认。
+    &.is-merged {
+      margin: 4px 0;
+      padding: 4px 8px 6px;
+      background-color: rgba(47, 84, 235, 0.06);
+      border: 1px solid rgba(47, 84, 235, 0.18);
+      border-left: 3px solid #2f54eb;
+      border-radius: 4px;
+
+      // 卡片本体已经有背景色，hover 状态以更深的同色提示交互
+      &:hover {
+        background-color: rgba(47, 84, 235, 0.1);
+      }
+
+      .m-editor-history-list-group-head {
+        font-weight: 600;
+        color: #1d39c4;
+      }
+
+      // 已撤销态：整张卡片去色
+      &.is-undone {
+        background-color: rgba(192, 196, 204, 0.08);
+        border-color: rgba(192, 196, 204, 0.4);
+        border-left-color: #c0c4cc;
+
+        .m-editor-history-list-group-head {
+          color: #c0c4cc;
+        }
+      }
+
+      // 当前组：卡片左条变蓝，与单步「当前」高亮一致
+      &.is-current {
+        background-color: rgba(64, 158, 255, 0.08);
+        border-color: rgba(64, 158, 255, 0.3);
+        border-left-color: var(--el-color-primary, #409eff);
+        box-shadow: none; // 覆盖 .is-current 公共的 inset 阴影
+
+        .m-editor-history-list-group-head {
+          color: var(--el-color-primary, #409eff);
+        }
+      }
+    }
+  }
+
+  .m-editor-history-list-substeps {
+    margin: 6px 0 0 6px;
+    padding: 0;
+    list-style: none;
+    border-left: 1px dashed rgba(47, 84, 235, 0.45);
+
+    li {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 3px 8px;
+      font-size: 11px;
+      color: #606266;
+      cursor: default;
+      border-radius: 3px;
+
+      &.is-clickable {
+        cursor: pointer;
+
+        &:hover {
+          background-color: rgba(47, 84, 235, 0.1);
+        }
+      }
+
+      &.is-undone {
+        color: #c0c4cc;
+      }
+
+      &.is-current {
+        color: var(--el-color-primary, #409eff);
+        font-weight: 600;
+        background-color: rgba(64, 158, 255, 0.08);
+        border-radius: 3px;
+      }
+    }
+  }
+
+  .m-editor-history-list-item-current {
+    flex: 0 0 auto;
+    padding: 0 6px;
+    border-radius: 2px;
+    font-size: 10px;
+    line-height: 16px;
+    color: #fff;
+    background-color: var(--el-color-primary, #409eff);
+    font-weight: 500;
+  }
+
+  .m-editor-history-list-item-index {
+    flex: 0 0 auto;
+    // 固定最小宽度并右对齐：序号位数不一（#6 / #16）时右边界仍统一，
+    // 使紧随其后的「类型」徽标在各行间对齐成整齐的一列。
+    min-width: 30px;
+    text-align: right;
+    color: #909399;
+    font-family: Menlo, Monaco, Consolas, "Courier New", monospace;
+    font-size: 11px;
+    font-weight: 400; // 防止被合并组头部的粗体继承
+    white-space: nowrap;
+  }
+
+  // 合并组头部展示的是步骤区间（如 #10-#20），宽度本就不定、也无需与单步行对齐，
+  // 恢复自然宽度与左对齐，避免被强制成固定列后显得突兀。
+  .m-editor-history-list-group.is-merged
+    > .m-editor-history-list-group-head
+    > .m-editor-history-list-item-index {
+    min-width: 0;
+    text-align: left;
+  }
+
+  // 操作时间：弱化展示，紧贴在描述之后、各操作按钮之前。
+  .m-editor-history-list-item-time {
+    flex: 0 0 auto;
+    color: #a8abb2;
+    font-family: Menlo, Monaco, Consolas, "Courier New", monospace;
+    font-size: 11px;
+    font-weight: 400; // 防止被合并组头部的粗体继承
+    white-space: nowrap;
+  }
+
+  .m-editor-history-list-item-op {
+    flex: 0 0 auto;
+    padding: 0 6px;
+    border-radius: 2px;
+    font-size: 11px;
+    line-height: 18px;
+    color: #fff;
+    background-color: #909399;
+
+    &.op-add {
+      background-color: #67c23a;
+    }
+
+    &.op-remove {
+      background-color: #f56c6c;
+    }
+
+    &.op-update {
+      background-color: #e6a23c;
+    }
+
+    &.op-initial {
+      background-color: #909399;
+    }
+  }
+
+  .m-editor-history-list-initial {
+    cursor: default;
+    color: #606266;
+    border-top: 1px dashed #dcdfe6;
+    margin-top: 4px;
+    padding-top: 8px;
+
+    &.is-clickable {
+      cursor: pointer;
+    }
+
+    .m-editor-history-list-item-desc {
+      font-style: italic;
+    }
+  }
+
+  .m-editor-history-list-item-desc {
+    flex: 1 1 auto;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  // 「操作途径」徽标：浅灰描边胶囊，弱化展示来源（画布 / 图层 / 配置面板…），不抢占描述焦点。
+  .m-editor-history-list-item-source {
+    flex: 0 0 auto;
+    padding: 0 6px;
+    border: 1px solid #dcdfe6;
+    border-radius: 8px;
+    font-size: 10px;
+    line-height: 14px;
+    color: #909399;
+    background-color: #f4f4f5;
+    white-space: nowrap;
+    font-weight: 400; // 防止被合并组头部的粗体继承
+  }
+
+  // 「操作人」徽标：浅蓝描边胶囊，弱化展示操作人，仅在 step.operator 有值时渲染。
+  .m-editor-history-list-item-operator {
+    flex: 0 0 auto;
+    padding: 0 6px;
+    border: 1px solid #c6e2ff;
+    border-radius: 8px;
+    font-size: 10px;
+    line-height: 14px;
+    color: #409eff;
+    background-color: #ecf5ff;
+    white-space: nowrap;
+    font-weight: 400; // 防止被合并组头部的粗体继承
+  }
+
+  // 「已保存」徽标：绿色实心胶囊，标记最近一次保存对应的历史记录（与 historyService.markSaved 对应）。
+  .m-editor-history-list-item-saved {
+    flex: 0 0 auto;
+    padding: 0 6px;
+    border-radius: 8px;
+    font-size: 10px;
+    line-height: 16px;
+    color: #fff;
+    background-color: #67c23a;
+    white-space: nowrap;
+    font-weight: 500;
+    letter-spacing: 0.2px;
+  }
+
+  // 「合并 N 步」徽标：紫色实心胶囊，与合并组卡片色系一致，醒目区分单步条目。
+  .m-editor-history-list-item-merge {
+    flex: 0 0 auto;
+    padding: 0 8px;
+    border-radius: 8px;
+    font-size: 10px;
+    line-height: 16px;
+    color: #fff;
+    background-color: #2f54eb;
+    font-weight: 500;
+    letter-spacing: 0.2px;
+  }
+
+  // 操作区：把「回滚 / 回到 / 查看差异」收敛为一个统一容器，默认隐藏，
+  // 仅在指针悬停于所在行时显示。静止状态下每行最右侧固定为「时间」，
+  // 各行因此能对齐成整齐的右侧列，避免按钮数量不一导致的参差错乱。
+  .m-editor-history-list-item-actions {
+    display: none;
+    flex: 0 0 auto;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .m-editor-history-list-group-head:hover > .m-editor-history-list-item-actions,
+  .m-editor-history-list-substeps
+    > li:hover
+    > .m-editor-history-list-item-actions,
+  .m-editor-history-list-initial:hover > .m-editor-history-list-item-actions {
+    display: flex;
+  }
+
+  .m-editor-history-list-item-diff {
+    flex: 0 0 auto;
+    padding: 0 6px;
+    border-radius: 2px;
+    font-size: 10px;
+    line-height: 16px;
+    color: var(--el-color-primary, #409eff);
+    background-color: rgba(64, 158, 255, 0.1);
+    cursor: pointer;
+    user-select: none;
+
+    &:hover {
+      background-color: rgba(64, 158, 255, 0.2);
+    }
+  }
+
+  // 「回到」按钮：将历史游标移动到该 step。使用绿色色系，
+  // 与红色「回滚」、蓝色「查看差异」区分，也避免与紧邻的灰色「来源」徽标混淆。
+  .m-editor-history-list-item-goto {
+    flex: 0 0 auto;
+    padding: 0 6px;
+    border-radius: 2px;
+    font-size: 10px;
+    line-height: 16px;
+    color: #529b2e;
+    background-color: rgba(103, 194, 58, 0.12);
+    cursor: pointer;
+    user-select: none;
+
+    &:hover {
+      background-color: rgba(103, 194, 58, 0.24);
+    }
+  }
+
+  // 「回滚」按钮：类 git revert，把目标 step 反向应用一次作为新提交。
+  // 使用红色色调，强调其为"破坏性/可逆操作"，与「查看差异」「跳转」区分开。
+  .m-editor-history-list-item-revert {
+    flex: 0 0 auto;
+    padding: 0 6px;
+    border-radius: 2px;
+    font-size: 10px;
+    line-height: 16px;
+    color: #f56c6c;
+    background-color: rgba(245, 108, 108, 0.12);
+    cursor: pointer;
+    user-select: none;
+
+    &:hover {
+      background-color: rgba(245, 108, 108, 0.25);
+    }
+  }
+
+  .m-editor-history-list-substep-desc {
+    flex: 1 1 auto;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .m-editor-history-list-bucket {
+    margin-bottom: 8px;
+
+    &:last-child {
+      margin-bottom: 0;
+    }
+  }
+
+  .m-editor-history-list-bucket-title {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 8px;
+    font-size: 12px;
+    font-weight: 500;
+    color: #606266;
+    background-color: #f5f7fa;
+    border-radius: 4px;
+
+    code {
+      flex: 1 1 auto;
+      font-family: Menlo, Monaco, Consolas, "Courier New", monospace;
+      font-size: 11px;
+      color: var(--el-color-primary, #409eff);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+  }
+
+  .m-editor-history-list-bucket-count {
+    flex: 0 0 auto;
+    color: #909399;
+    font-weight: 400;
+    font-size: 11px;
+  }
+}
+
+.m-editor-history-diff-dialog {
+  .m-editor-history-diff-dialog-body {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .m-editor-history-diff-dialog-notice {
+    margin-bottom: 8px;
+    padding: 8px 12px;
+    background-color: #fdf6ec;
+    border: 1px solid #faecd8;
+    border-radius: 4px;
+    color: #e6a23c;
+    font-size: 13px;
+    line-height: 1.5;
+  }
+
+  .m-editor-history-diff-dialog-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 8px;
+    padding: 8px 12px;
+    background-color: #f5f7fa;
+    border-radius: 4px;
+    gap: 12px;
+  }
+
+  .m-editor-history-diff-dialog-controls {
+    display: flex;
+    align-items: center;
+    flex: 0 0 auto;
+    gap: 8px;
+  }
+
+  .m-editor-history-diff-dialog-view,
+  .m-editor-history-diff-dialog-mode {
+    flex: 0 0 auto;
+  }
+
+  .m-editor-history-diff-dialog-target {
+    flex: 1 1 auto;
+    font-size: 13px;
+    font-weight: 500;
+    color: #303133;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .m-editor-history-diff-dialog-legend {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 12px;
+    padding: 0 4px;
+  }
+
+  .m-editor-history-diff-dialog-arrow {
+    color: #909399;
+    font-size: 12px;
+  }
+
+  .m-editor-history-diff-dialog-tip {
+    margin-left: 8px;
+    color: #e6a23c;
+    font-size: 12px;
+  }
+}

@@ -4,6 +4,7 @@ import { allowTs } from './utils/allowTs';
 import { error } from './utils/logger';
 import { scripts } from './commands';
 import App from './Core';
+import { require } from './require';
 import { UserConfig } from './types';
 
 /**
@@ -29,6 +30,7 @@ export const cli = (defaultAppConfig: UserConfig): void => {
   const program = cac('tmagic');
 
   // display core version and cli version
+
   const versionCli = require('../package.json').version;
   program.version(`tmagic/cli@${versionCli}`);
 

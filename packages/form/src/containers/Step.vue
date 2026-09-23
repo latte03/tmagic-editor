@@ -15,7 +15,7 @@
         <Container
           v-if="item"
           v-show="active - 1 === index"
-          :key="item[mForm?.keyProp || '__key']"
+          :key="(item as Record<string, any>)[mForm?.keyProp || '__key']"
           :config="item"
           :model="step.name ? model[step.name] : model"
           :lastValues="step.name ? lastValues[step.name] : lastValues"
@@ -24,6 +24,7 @@
           :size="size"
           :disabled="disabled"
           :label-width="config.labelWidth || labelWidth"
+          :label-position="config.labelPosition || labelPosition"
           @change="changeHandler"
           @addDiffCount="onAddDiffCount()"
         ></Container>
@@ -37,7 +38,7 @@ import { inject, ref, watchEffect } from 'vue';
 
 import { TMagicStep, TMagicSteps } from '@tmagic/design';
 
-import { FormState, StepConfig } from '../schema';
+import type { ContainerChangeEventData, FormState, StepConfig } from '../schema';
 
 import Container from './Container.vue';
 
@@ -48,11 +49,13 @@ defineOptions({
 const props = withDefaults(
   defineProps<{
     model: any;
+    name?: string;
     lastValues?: any;
     isCompare?: boolean;
     config: StepConfig;
     stepActive?: number;
     labelWidth?: string;
+    labelPosition?: 'top' | 'left' | 'right';
     size?: string;
     disabled?: boolean;
   }>(),
@@ -61,7 +64,10 @@ const props = withDefaults(
   },
 );
 
-const emit = defineEmits(['change', 'addDiffCount']);
+const emit = defineEmits<{
+  change: [v: any, eventData: ContainerChangeEventData];
+  addDiffCount: [];
+}>();
 
 const mForm = inject<FormState | undefined>('mForm');
 const active = ref(1);
@@ -75,8 +81,9 @@ const stepClick = (index: number) => {
   mForm?.$emit('update:stepActive', active.value);
 };
 
-const changeHandler = () => {
-  emit('change', props.model);
+const changeHandler = (v: any, eventData: ContainerChangeEventData) => {
+  emit('change', props.model, eventData);
 };
+
 const onAddDiffCount = () => emit('addDiffCount');
 </script>

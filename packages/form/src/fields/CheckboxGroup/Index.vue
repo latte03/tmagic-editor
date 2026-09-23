@@ -1,0 +1,39 @@
+<template>
+  <TMagicCheckboxGroup :model-value="model[name]" :size="size" :disabled="disabled" @update:model-value="changeHandler">
+    <TMagicCheckbox v-for="option in options" :value="option.value" :key="option.value" :disabled="option.disabled"
+      >{{ option.text }}
+    </TMagicCheckbox>
+  </TMagicCheckboxGroup>
+</template>
+
+<script lang="ts" setup>
+import { computed, inject } from 'vue';
+
+import { TMagicCheckbox, TMagicCheckboxGroup } from '@tmagic/design';
+
+import type { CheckboxGroupConfig, CheckboxGroupOption, FieldProps, FormState } from '@form/schema';
+import { filterFunction } from '@form/utils/form';
+import { useAddField } from '@form/utils/useAddField';
+
+defineOptions({
+  name: 'MFormCheckGroup',
+});
+
+const props = defineProps<FieldProps<CheckboxGroupConfig>>();
+
+const emit = defineEmits(['change']);
+
+useAddField(props.prop);
+
+const changeHandler = (v: Array<string | number | boolean>) => {
+  emit('change', v);
+};
+
+const mForm = inject<FormState | undefined>('mForm');
+const options = computed(() => {
+  if (Array.isArray(props.config.options)) return props.config.options;
+  if (typeof props.config.options === 'function')
+    return filterFunction<CheckboxGroupOption[]>(mForm, props.config.options, props) || [];
+  return [];
+});
+</script>

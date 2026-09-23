@@ -1,9 +1,11 @@
 <template>
   <FloatingBox
+    :body-style="{ padding: '0 16px' }"
     v-model:visible="boxVisible"
     v-model:width="width"
     v-model:height="editorHeight"
     :title="title"
+    :framework-width="frameworkWidth"
     :position="boxPosition"
   >
     <template #body>
@@ -22,16 +24,16 @@
 </template>
 
 <script setup lang="ts">
-import { inject, Ref, ref, watchEffect } from 'vue';
+import { computed, inject, nextTick, provide, Ref, ref, watch, watchEffect } from 'vue';
 
+import type { DataSourceSchema } from '@tmagic/core';
 import { tMagicMessage } from '@tmagic/design';
-import { FormConfig, MFormBox } from '@tmagic/form';
-import { DataSourceSchema } from '@tmagic/schema';
+import { type ContainerChangeEventData, type FormConfig, MFormBox } from '@tmagic/form';
 
 import FloatingBox from '@editor/components/FloatingBox.vue';
-import { useEditorContentHeight } from '@editor/hooks';
+import { useEditorContentHeight } from '@editor/hooks/use-editor-content-height';
 import { useNextFloatBoxPosition } from '@editor/hooks/use-next-float-box-position';
-import type { Services } from '@editor/type';
+import { useServices } from '@editor/hooks/use-services';
 
 defineOptions({
   name: 'MEditorDataSourceConfigPanel',
@@ -41,14 +43,22 @@ const props = defineProps<{
   title?: string;
   values: any;
   disabled: boolean;
+  /** 打开后需要直接定位并打开的方法名，传入时默认激活「方法定义」tab */
+  editMethodName?: string;
+  /** 打开后需要直接定位并打开的字段路径，传入时默认激活「数据定义」tab */
+  editFieldPath?: string[];
 }>();
 
 const boxVisible = defineModel<boolean>('visible', { default: false });
 const width = defineModel<number>('width', { default: 670 });
 
-const emit = defineEmits(['submit']);
+const emit = defineEmits<{
+  submit: [v: any, eventData: ContainerChangeEventData];
+  close: [];
+  open: [id: string];
+}>();
 
-const services = inject<Services>('services');
+const { uiService, dataSourceService } = useServices();
 
 const initValues = ref<Partial<DataSourceSchema>>({});
 const dataSourceConfig = ref<FormConfig>([]);
@@ -56,20 +66,56 @@ const dataSourceConfig = ref<FormConfig>([]);
 const { height: editorHeight } = useEditorContentHeight();
 
 const parentFloating = inject<Ref<HTMLDivElement | null>>('parentFloating', ref(null));
-const { boxPosition, calcBoxPosition } = useNextFloatBoxPosition(services?.uiService, parentFloating);
+const { boxPosition, calcBoxPosition } = useNextFloatBoxPosition(uiService, parentFloating);
+const frameworkWidth = computed(() => uiService.get('frameworkRect')?.width || 0);
+
+/** 供「方法定义」tab 内的字段消费，用于打开数据源详情后自动打开指定方法 */
+provide(
+  'editingDataSourceMethodName',
+  computed(() => props.editMethodName),
+);
+
+/** 供「数据定义」tab 内的字段消费，用于打开数据源详情后自动打开指定字段 */
+provide(
+  'editingDataSourceFieldPath',
+  computed(() => props.editFieldPath || []),
+);
 
 watchEffect(() => {
   initValues.value = props.values;
-  dataSourceConfig.value = services?.dataSourceService.getFormConfig(initValues.value.type) || [];
+  const config = dataSourceService.getFormConfig(initValues.value.type);
+
+  // 传入方法名/字段路径时，将外层 tab 容器默认激活到对应 tab（status: methods / fields）
+  // 未传入时默认激活「数据定义」tab（fields）
+  let activeTab = 'fields';
+  if (props.editMethodName) {
+    activeTab = 'methods';
+  } else if (props.editFieldPath?.length) {
+    activeTab = 'fields';
+  }
+
+  dataSourceConfig.value = config.map((item) =>
+    (item as { type?: string }).type === 'tab' ? { ...item, active: activeTab } : item,
+  );
 });
 
-const submitHandler = (values: any) => {
-  emit('submit', values);
+const submitHandler = (values: any, data: ContainerChangeEventData) => {
+  emit('submit', values, data);
 };
 
 const errorHandler = (error: any) => {
   tMagicMessage.error(error.message);
 };
+
+watch(boxVisible, (visible) => {
+  nextTick(() => {
+    if (!visible) {
+      emit('close');
+    } else if (initValues.value?.id) {
+      emit('open', initValues.value.id);
+    }
+  });
+});
 
 defineExpose({
   show() {

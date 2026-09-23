@@ -1,7 +1,7 @@
 /*
  * Tencent is pleased to support the open source community by making TMagicEditor available.
  *
- * Copyright (C) 2023 THL A29 Limited, a Tencent company.  All rights reserved.
+ * Copyright (C) 2025 Tencent.  All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,8 +19,8 @@
 import type { GuidesOptions } from '@scena/guides';
 import type { MoveableOptions, OnDragStart } from 'moveable';
 
+import type { Id, MApp, MContainer, MNode } from '@tmagic/core';
 import Core from '@tmagic/core';
-import type { Id, MApp, MContainer, MNode } from '@tmagic/schema';
 
 import { AbleActionEventType, ContainerHighlightType, GuidesType, RenderType, ZIndex } from './const';
 import DragResizeHelper from './DragResizeHelper';
@@ -30,18 +30,34 @@ export type TargetElement = HTMLElement | SVGElement;
 
 export type CanSelect = (el: HTMLElement, event: MouseEvent, stop: () => boolean) => boolean | Promise<boolean>;
 export type IsContainer = (el: HTMLElement) => boolean | Promise<boolean>;
-export type CustomizeRender = (renderer: StageCore) => Promise<HTMLElement> | HTMLElement;
+/**
+ * 判断当前正在拖动的源是否可以拖入目标容器（用于画布上拖入组件时的容器高亮命中）
+ * @param sourceIds 当前正在拖动的源节点 id 列表
+ *   - 在画布上拖动已有组件时：为被拖动的组件 id（多选拖动时为多个）
+ *   - 从组件列表拖入新组件时：为空数组（此时尚无 id，可仅依据 targetId 判断）
+ * @param targetId 已通过 isContainer 命中的候选容器节点 id
+ * @returns
+ *   - `false`：阻止该容器被视为合法拖入目标（不会被高亮命中）
+ *   - `Id`（string | number）：将拖入目标重定向到该 id 对应的节点
+ *   - 其他（`true` / `void` / `undefined`）：按命中的 targetId 正常拖入
+ */
+export type CanDropIn = (sourceIds: Id[], targetId: Id) => Id | boolean | void;
+export type CustomizeRender = (renderer: StageCore) => Promise<HTMLElement | void> | HTMLElement | void;
+
+export type CustomizeMoveableOptionsFunction = (config: CustomizeMoveableOptionsCallbackConfig) => MoveableOptions;
+
 /** 业务方自定义的moveableOptions，可以是配置，也可以是回调函数 */
-export type CustomizeMoveableOptions =
-  | ((config?: CustomizeMoveableOptionsCallbackConfig) => MoveableOptions)
-  | MoveableOptions
-  | undefined;
+export type CustomizeMoveableOptions = CustomizeMoveableOptionsFunction | MoveableOptions;
 /** render提供给的接口，id转成el */
 export type GetTargetElement = (id: Id) => HTMLElement | null;
 /** render提供的接口，通过坐标获得坐标下所有HTML元素数组 */
 export type GetElementsFromPoint = (point: Point) => HTMLElement[];
 export type GetRenderDocument = () => Document | undefined;
-export type DelayedMarkContainer = (event: MouseEvent, exclude: Element[]) => NodeJS.Timeout | undefined;
+export type DelayedMarkContainer = (
+  event: MouseEvent,
+  exclude?: Element[],
+  isAdd?: boolean,
+) => NodeJS.Timeout | undefined;
 export type MarkContainerEnd = () => HTMLElement | null;
 export type GetRootContainer = () => HTMLDivElement | undefined;
 
@@ -54,19 +70,40 @@ export interface StageCoreConfig {
   zoom?: number;
   canSelect?: CanSelect;
   isContainer?: IsContainer;
+  /**
+   * 画布上拖动组件时，对已通过 isContainer 命中的候选容器进行二次过滤，
+   * 用于实现"某些源不允许拖入某些容器内部"的场景。返回 false 时阻止该容器被高亮命中
+   */
+  canDropIn?: CanDropIn;
   containerHighlightClassName?: string;
   containerHighlightDuration?: number;
   containerHighlightType?: ContainerHighlightType;
+  /**
+   * 是否仅在新增组件（从组件列表拖入新组件）时才启用将组件拖入容器，
+   * 开启后在画布中拖动已有组件不会识别容器，默认 false
+   */
+  containerHighlightAddOnly?: boolean;
   moveableOptions?: CustomizeMoveableOptions;
   /** runtime 的HTML地址，可以是一个HTTP地址，如果和编辑器不同域，需要设置跨域，也可以是一个相对或绝对路径 */
   runtimeUrl?: string;
-  render?: (renderer: StageCore) => Promise<HTMLElement> | HTMLElement;
+  render?: CustomizeRender;
   autoScrollIntoView?: boolean;
   updateDragEl?: UpdateDragEl;
   disabledDragStart?: boolean;
   renderType?: RenderType;
   guidesOptions?: Partial<GuidesOptions>;
   disabledMultiSelect?: boolean;
+  /**
+   * 始终启用多选模式（无需按住 Ctrl/Meta），默认 false。
+   * 当 `disabledMultiSelect` 为 true 时，本配置失效。
+   */
+  alwaysMultiSelect?: boolean;
+  disabledRule?: boolean;
+  /**
+   * 是否禁用「非点击画布选中组件时，对选中区域做高亮闪烁提示」，默认 false（即默认开启闪烁提示）。
+   * 用于从图层树、面包屑等外部选中组件时，帮助用户快速定位组件在画布中的位置。
+   */
+  disabledFlashTip?: boolean;
 }
 
 export interface ActionManagerConfig {
@@ -74,11 +111,20 @@ export interface ActionManagerConfig {
   containerHighlightClassName?: string;
   containerHighlightDuration?: number;
   containerHighlightType?: ContainerHighlightType;
+  /** 见 StageCoreConfig.containerHighlightAddOnly */
+  containerHighlightAddOnly?: boolean;
   moveableOptions?: CustomizeMoveableOptions;
   disabledDragStart?: boolean;
   disabledMultiSelect?: boolean;
+  /**
+   * 始终启用多选模式（无需按住 Ctrl/Meta），默认 false。
+   * 当 `disabledMultiSelect` 为 true 时，本配置失效。
+   */
+  alwaysMultiSelect?: boolean;
   canSelect?: CanSelect;
   isContainer?: IsContainer;
+  /** 见 StageCoreConfig.canDropIn */
+  canDropIn?: CanDropIn;
   getRootContainer: GetRootContainer;
   getRenderDocument: GetRenderDocument;
   updateDragEl?: UpdateDragEl;
@@ -88,10 +134,11 @@ export interface ActionManagerConfig {
 
 export interface MoveableOptionsManagerConfig {
   container: HTMLElement;
-  moveableOptions?: CustomizeMoveableOptions;
+  moveableOptions?: MoveableOptions | (() => MoveableOptions);
   getRootContainer: GetRootContainer;
 }
 
+// #region CustomizeMoveableOptionsCallbackConfig
 export interface CustomizeMoveableOptionsCallbackConfig {
   targetEl: HTMLElement | null;
   targetElId?: string;
@@ -100,34 +147,29 @@ export interface CustomizeMoveableOptionsCallbackConfig {
   isMulti: boolean;
   document?: Document;
 }
+// #endregion CustomizeMoveableOptionsCallbackConfig
 
 export interface StageRenderConfig {
   runtimeUrl?: string;
   zoom: number | undefined;
   renderType?: RenderType;
-  customizedRender?: () => Promise<HTMLElement | null>;
+  customizedRender?: () => Promise<HTMLElement | null | void>;
 }
 
 export interface StageMaskConfig {
   core: StageCore;
 }
 
-export interface StageDragResizeConfig {
-  container: HTMLElement;
+export interface StageDragResizeConfig extends MoveableOptionsManagerConfig {
   dragResizeHelper: DragResizeHelper;
-  moveableOptions?: CustomizeMoveableOptions;
   disabledDragStart?: boolean;
-  getRootContainer: GetRootContainer;
   getRenderDocument: GetRenderDocument;
   markContainerEnd: MarkContainerEnd;
   delayedMarkContainer: DelayedMarkContainer;
 }
 
-export interface StageMultiDragResizeConfig {
-  container: HTMLElement;
+export interface StageMultiDragResizeConfig extends MoveableOptionsManagerConfig {
   dragResizeHelper: DragResizeHelper;
-  moveableOptions?: CustomizeMoveableOptions;
-  getRootContainer: GetRootContainer;
   getRenderDocument: GetRenderDocument;
   markContainerEnd: MarkContainerEnd;
   delayedMarkContainer: DelayedMarkContainer;
@@ -193,6 +235,8 @@ export interface UpdateData {
   parent?: MContainer;
   parentId?: Id;
   root: MApp;
+  /** 插入到父节点 items 中的目标下标；runtime 优先按此同步，避免依赖选中态推算顺序 */
+  index?: number;
 }
 
 export interface RemoveData {
@@ -210,9 +254,11 @@ export interface Runtime {
   update?: (data: UpdateData) => void;
   sortNode?: (data: SortEventData) => void;
   remove?: (data: RemoveData) => void;
+  [key: string]: any;
 }
 
 export interface Magic {
+  id: string;
   /** 当前页面的根节点变化时调用该方法，编辑器会同步该el和stage的大小，该方法由stage注入到iframe.contentWindow中 */
   onPageElUpdate: (el: HTMLElement) => void;
 
@@ -236,8 +282,14 @@ export interface TargetShadowConfig {
   idPrefix?: string;
 }
 
+export interface StageFlashHighlightConfig {
+  container: HTMLElement;
+  updateDragEl?: UpdateDragEl;
+}
+
 export interface RuleOptions {
   guidesOptions?: Partial<GuidesOptions>;
+  disabledRule?: boolean;
 }
 
 export interface CoreEvents {
@@ -251,6 +303,7 @@ export interface CoreEvents {
   update: [data: UpdateEventData];
   sort: [data: SortEventData];
   'select-parent': [];
+  rerender: [];
   remove: [data: RemoveEventData];
   highlight: [highlightEl: HTMLElement];
   mousemove: [event: MouseEvent];
@@ -283,6 +336,7 @@ export interface ActionManagerEvents {
   sort: [data: SortEventData];
   remove: [data: RemoveEventData];
   select: [selectedEl: HTMLElement | null, event: MouseEvent];
+  rerender: [];
   'select-parent': [];
   'drag-start': [event: OnDragStart];
   'multi-update': [data: UpdateEventData];
@@ -297,6 +351,7 @@ export interface DrEvents {
   'update-moveable': [];
   [AbleActionEventType.REMOVE]: [];
   [AbleActionEventType.SELECT_PARENT]: [];
+  [AbleActionEventType.RERENDER]: [];
   'drag-start': [event: OnDragStart];
   update: [data: UpdateEventData];
   sort: [data: SortEventData];

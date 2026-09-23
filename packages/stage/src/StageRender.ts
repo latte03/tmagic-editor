@@ -1,7 +1,7 @@
 /*
  * Tencent is pleased to support the open source community by making TMagicEditor available.
  *
- * Copyright (C) 2023 THL A29 Limited, a Tencent company.  All rights reserved.
+ * Copyright (C) 2025 Tencent.  All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,8 +18,10 @@
 
 import { EventEmitter } from 'events';
 
-import { Id } from '@tmagic/schema';
-import { getHost, injectStyle, isSameDomain } from '@tmagic/utils';
+import { snapdom, SnapdomOptions } from '@zumer/snapdom';
+
+import type { Id } from '@tmagic/core';
+import { getElById, getHost, guid, injectStyle, isSameDomain } from '@tmagic/core';
 
 import { DEFAULT_ZOOM, RenderType } from './const';
 import style from './style.css?raw';
@@ -36,7 +38,7 @@ export default class StageRender extends EventEmitter {
   private runtimeUrl?: string;
   private zoom = DEFAULT_ZOOM;
   private renderType: RenderType;
-  private customizedRender?: () => Promise<HTMLElement | null>;
+  private customizedRender?: () => Promise<HTMLElement | null | void>;
 
   constructor({ runtimeUrl, zoom, customizedRender, renderType = RenderType.IFRAME }: StageRenderConfig) {
     super();
@@ -54,8 +56,15 @@ export default class StageRender extends EventEmitter {
   }
 
   public getMagicApi = () => ({
-    onPageElUpdate: (el: HTMLElement) => this.emit('page-el-update', el),
+    id: guid(),
+    onPageElUpdate: (el: HTMLElement) => {
+      this.emit('page-el-update', el);
+    },
     onRuntimeReady: (runtime: Runtime) => {
+      if (this.runtime) {
+        return;
+      }
+
       this.runtime = runtime;
       // @ts-ignore
       globalThis.runtime = runtime;
@@ -152,17 +161,76 @@ export default class StageRender extends EventEmitter {
   }
 
   public getTargetElement(id: Id): HTMLElement | null {
-    return this.getDocument()?.getElementById(`${id}`) || null;
+    return getElById()(this.getDocument(), id);
+  }
+
+  /**
+   * 将指定id的dom元素生成为图片
+   * @param id 目标元素的id
+   * @param options 图片生成选项
+   * @returns data URL 格式的图片数据
+   */
+  public async getElementImage(
+    id: Id,
+    type: 'download' | 'raw' | 'svg' | 'canvas' | 'png' | 'jpeg' | 'webp' | 'blob' = 'png',
+    options: SnapdomOptions = {},
+  ) {
+    const el = this.getTargetElement(id);
+    if (!el) {
+      throw new Error(`Element with id "${id}" not found`);
+    }
+
+    el.scrollIntoView();
+
+    const toFunc = `to${type.charAt(0).toUpperCase() + type.slice(1)}`;
+
+    const result = await snapdom(el, options);
+
+    if (toFunc in result) {
+      return result[toFunc]();
+    }
+
+    throw new Error(`Invalid type: ${type}`);
+  }
+
+  public postTmagicRuntimeReady() {
+    this.contentWindow = this.iframe?.contentWindow as RuntimeWindow;
+
+    this.contentWindow.magic = this.getMagicApi();
+
+    this.contentWindow.postMessage(
+      {
+        tmagicRuntimeReady: true,
+      },
+      '*',
+    );
+  }
+
+  public reloadIframe(url: string) {
+    if (this.renderType !== RenderType.IFRAME) return;
+
+    const el = this.iframe?.parentElement;
+    this.destroyIframe();
+    this.runtimeUrl = url;
+    this.createIframe();
+    this.mount(el as HTMLDivElement);
+    this.runtime = null;
+  }
+
+  public destroyIframe() {
+    this.iframe?.removeEventListener('load', this.iframeLoadHandler);
+    this.contentWindow = null;
+    this.iframe?.remove();
+    this.iframe = undefined;
   }
 
   /**
    * 销毁实例
    */
   public destroy(): void {
-    this.iframe?.removeEventListener('load', this.iframeLoadHandler);
-    this.contentWindow = null;
-    this.iframe?.remove();
-    this.iframe = undefined;
+    this.destroyIframe();
+    // @ts-ignore
+    globalThis.runtime = undefined;
     this.removeAllListeners();
   }
 
@@ -218,35 +286,26 @@ export default class StageRender extends EventEmitter {
     }
   }
 
-  private iframeLoadHandler = async () => {
-    if (!this.contentWindow?.magic) {
-      this.postTmagicRuntimeReady();
-    }
-
-    if (!this.contentWindow) return;
-
-    if (this.customizedRender) {
-      const el = await this.customizedRender();
-      if (el) {
-        this.contentWindow.document?.body?.appendChild(el);
+  private iframeLoadHandler = () => {
+    const handler = async () => {
+      if (!this.contentWindow?.magic) {
+        this.postTmagicRuntimeReady();
       }
-    }
 
-    this.emit('onload');
+      if (!this.contentWindow) return;
 
-    injectStyle(this.contentWindow.document, style);
+      if (this.customizedRender) {
+        const el = await this.customizedRender();
+        if (el) {
+          this.contentWindow.document?.body?.appendChild(el);
+        }
+      }
+
+      this.emit('onload');
+
+      injectStyle(this.contentWindow.document, style);
+    };
+
+    handler();
   };
-
-  private postTmagicRuntimeReady() {
-    this.contentWindow = this.iframe?.contentWindow as RuntimeWindow;
-
-    this.contentWindow.magic = this.getMagicApi();
-
-    this.contentWindow.postMessage(
-      {
-        tmagicRuntimeReady: true,
-      },
-      '*',
-    );
-  }
 }

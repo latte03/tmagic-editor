@@ -1,7 +1,7 @@
 /*
  * Tencent is pleased to support the open source community by making TMagicEditor available.
  *
- * Copyright (C) 2023 THL A29 Limited, a Tencent company.  All rights reserved.
+ * Copyright (C) 2025 Tencent.  All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,6 +15,8 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+import { JsEngine } from '@tmagic/schema';
+import { isNumber } from '@tmagic/utils';
 
 export const style2Obj = (style: string) => {
   if (typeof style !== 'string') {
@@ -49,9 +51,92 @@ export const style2Obj = (style: string) => {
 
 export const fillBackgroundImage = (value: string) => {
   if (value && !/^url/.test(value) && !/^linear-gradient/.test(value)) {
-    return `url(${value})`;
+    return `url("${value}")`;
   }
   return value;
 };
 
-export const isNumber = (value: string) => /^(-?\d+)(\.\d+)?$/.test(value);
+export const getTransform = (value: Record<string, string> | string, jsEngine: JsEngine) => {
+  const isHippy = jsEngine === 'hippy';
+
+  if (!value) return isHippy ? [] : '';
+
+  if (typeof value === 'string') {
+    if (!isHippy) return value;
+
+    // Hippy 不支持 css transform 字符串，需要将 "rotate(90deg) scale(1.5)" 解析成 [{ rotate: '90deg' }, { scale: '1.5' }]
+    const transformArr: Record<string, string>[] = [];
+    value.replace(/(\w+)\(([^)]+)\)/g, (_, key, val) => {
+      transformArr.push({ [key]: val.trim() });
+      return '';
+    });
+    return transformArr;
+  }
+
+  const transform = Object.entries(value).map(([transformKey, transformValue]) => {
+    if (!transformValue.trim()) return '';
+    if (transformKey === 'rotate' && isNumber(transformValue)) {
+      transformValue = `${transformValue}deg`;
+    }
+
+    return isHippy ? { [transformKey]: transformValue } : `${transformKey}(${transformValue})`;
+  });
+
+  if (isHippy) {
+    return transform;
+  }
+  const values = transform.join(' ');
+  return values.trim();
+};
+
+/**
+ * 将dsl中的style配置转换成css，主要是将数值转成rem为单位的样式值，例如100将被转换成1rem
+ * @param style Object
+ * @returns Object
+ */
+export const transformStyle = (style: Record<string, any> | string, jsEngine: JsEngine) => {
+  if (!style) {
+    return {};
+  }
+
+  let styleObj: Record<string, any> = {};
+  const results: Record<string, any> = {};
+
+  if (typeof style === 'string') {
+    styleObj = style2Obj(style);
+  } else {
+    styleObj = { ...style };
+  }
+
+  const isHippy = jsEngine === 'hippy';
+
+  const whiteList = ['zIndex', 'opacity', 'fontWeight'];
+  Object.entries(styleObj).forEach(([key, value]) => {
+    if (key === 'scale' && !results.transform && isHippy) {
+      results.transform = [{ scale: value }];
+    } else if (key === 'backgroundImage' && !isHippy) {
+      value && (results[key] = fillBackgroundImage(value));
+    } else if (key === 'transform') {
+      const transform = getTransform(value, jsEngine);
+      if (transform) {
+        results[key] = transform;
+      }
+    } else if (!whiteList.includes(key) && value && /^[-]?[0-9]*[.]?[0-9]*$/.test(value)) {
+      results[key] = isHippy ? value : `${value / 100}rem`;
+    } else {
+      results[key] = value;
+    }
+  });
+
+  return results;
+};
+
+export const COMMON_EVENT_PREFIX = 'magic:common:events:';
+export const COMMON_METHOD_PREFIX = 'magic:common:actions:';
+
+// #region EventOption
+export interface EventOption {
+  label: string;
+  value: string;
+}
+// #endregion EventOption

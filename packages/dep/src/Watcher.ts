@@ -1,14 +1,29 @@
+import { NODE_DISABLE_CODE_BLOCK_KEY, NODE_DISABLE_DATA_SOURCE_KEY } from '@tmagic/schema';
 import { isObject } from '@tmagic/utils';
 
 import type Target from './Target';
-import { DepTargetType, type TargetList } from './types';
+import { type DepExtendedData, DepTargetType, type TargetList, TargetNode } from './types';
+import { traverseTarget } from './utils';
+
+const DATA_SOURCE_TARGET_TYPES: Set<string> = new Set([
+  DepTargetType.DATA_SOURCE,
+  DepTargetType.DATA_SOURCE_COND,
+  DepTargetType.DATA_SOURCE_METHOD,
+]);
 
 export default class Watcher {
   private targetsList: TargetList = {};
+  private childrenProp = 'items';
+  private idProp = 'id';
+  private nameProp = 'name';
 
-  constructor(options?: { initialTargets?: TargetList }) {
+  constructor(options?: { initialTargets?: TargetList; childrenProp?: string }) {
     if (options?.initialTargets) {
       this.targetsList = options.initialTargets;
+    }
+
+    if (options?.childrenProp) {
+      this.childrenProp = options.childrenProp;
     }
   }
 
@@ -95,9 +110,9 @@ export default class Watcher {
    * 删除所有target
    */
   public clearTargets() {
-    Object.keys(this.targetsList).forEach((key) => {
+    for (const key of Object.keys(this.targetsList)) {
       delete this.targetsList[key];
-    });
+    }
   }
 
   /**
@@ -106,40 +121,96 @@ export default class Watcher {
    * @param deep 是否需要收集子节点
    * @param type 强制收集指定类型的依赖
    */
-  public collect(nodes: Record<string | number, any>[], deep = false, type?: DepTargetType) {
-    Object.values(this.targetsList).forEach((targets) => {
-      Object.values(targets).forEach((target) => {
-        if ((!type && !target.isCollectByDefault) || (type && target.type !== type)) return;
-        nodes.forEach((node) => {
-          // 先删除原有依赖，重新收集
-          target.removeDep(node);
-          this.collectItem(node, target, deep);
-        });
-      });
-    });
+  public collect(
+    nodes: TargetNode[],
+    depExtendedData: DepExtendedData = {},
+    deep = false,
+    type?: DepTargetType | string,
+  ) {
+    const targets = this.getCollectableTargets(type);
+
+    if (!targets.length) {
+      return;
+    }
+
+    // 整棵树只遍历一次、在每个属性上检查所有 target，把结构遍历开销从 ×targets 降到 ×1（详见 collectItems）
+    for (const node of nodes) {
+      this.removeTargetsDep(targets, node);
+      this.collectItems(node, targets, depExtendedData, deep);
+    }
+  }
+
+  /**
+   * 获取本次需要参与收集的 target（过滤规则与 collectByCallback 一致）
+   *
+   * 注：供 editor 的 dep service / worker 跨包批量收集时复用，因此为 public。
+   * @param type 强制收集指定类型的依赖
+   */
+  public getCollectableTargets(type?: DepTargetType | string): Target[] {
+    const targets: Target[] = [];
+    traverseTarget(
+      this.targetsList,
+      (target) => {
+        if (!type && !target.isCollectByDefault) {
+          return;
+        }
+        targets.push(target);
+      },
+      type,
+    );
+    return targets;
+  }
+
+  public collectByCallback(
+    nodes: TargetNode[],
+    type: DepTargetType | string | undefined,
+    cb: (data: { node: TargetNode; target: Target }) => void,
+  ) {
+    traverseTarget(
+      this.targetsList,
+      (target) => {
+        if (!type && !target.isCollectByDefault) {
+          return;
+        }
+        for (const node of nodes) {
+          cb({ node, target });
+        }
+      },
+      type,
+    );
   }
 
   /**
    * 清除所有目标的依赖
    * @param nodes 需要清除依赖的节点
    */
-  public clear(nodes?: Record<string | number, any>[]) {
-    const clearedItemsNodeIds: (string | number)[] = [];
-    Object.values(this.targetsList).forEach((targets) => {
-      Object.values(targets).forEach((target) => {
-        if (nodes) {
-          nodes.forEach((node) => {
-            target.removeDep(node);
+  public clear(nodes?: TargetNode[], type?: DepTargetType | string) {
+    let { targetsList } = this;
 
-            if (Array.isArray(node.items) && node.items.length && !clearedItemsNodeIds.includes(node.id)) {
-              clearedItemsNodeIds.push(node.id);
-              this.clear(node.items);
-            }
-          });
-        } else {
-          target.removeDep();
+    if (type) {
+      targetsList = {
+        [type]: this.getTargets(type),
+      };
+    }
+
+    const clearedItemsNodeIds = new Set<string | number>();
+    traverseTarget(targetsList, (target) => {
+      if (nodes) {
+        for (const node of nodes) {
+          target.removeDep(node[this.idProp]);
+
+          if (
+            Array.isArray(node[this.childrenProp]) &&
+            node[this.childrenProp].length &&
+            !clearedItemsNodeIds.has(node[this.idProp])
+          ) {
+            clearedItemsNodeIds.add(node[this.idProp]);
+            this.clear(node[this.childrenProp]);
+          }
         }
-      });
+      } else {
+        target.removeDep();
+      }
     });
   }
 
@@ -148,55 +219,136 @@ export default class Watcher {
    * @param type 类型
    * @param nodes 需要清除依赖的节点
    */
-  public clearByType(type: DepTargetType, nodes?: Record<string | number, any>[]) {
-    const clearedItemsNodeIds: (string | number)[] = [];
-    const targetList = this.getTargets(type);
-    Object.values(targetList).forEach((target) => {
-      if (nodes) {
-        nodes.forEach((node) => {
-          target.removeDep(node);
-          if (Array.isArray(node.items) && node.items.length && !clearedItemsNodeIds.includes(node.id)) {
-            clearedItemsNodeIds.push(node.id);
-            this.clear(node.items);
-          }
-        });
-      } else {
-        target.removeDep();
+  public clearByType(type: DepTargetType | string, nodes?: TargetNode[]) {
+    this.clear(nodes, type);
+  }
+
+  /**
+   * 收集单个 target 的依赖，等价于 collectItems(node, [target], ...)
+   */
+  public collectItem(node: TargetNode, target: Target, depExtendedData: DepExtendedData = {}, deep = false) {
+    this.collectItems(node, [target], depExtendedData, deep);
+  }
+
+  public removeTargetDep(target: Target, node: TargetNode, key?: string | number) {
+    target.removeDep(node[this.idProp], key);
+    if (typeof key === 'undefined' && Array.isArray(node[this.childrenProp]) && node[this.childrenProp].length) {
+      for (const item of node[this.childrenProp] as TargetNode[]) {
+        this.removeTargetDep(target, item, key);
       }
+    }
+  }
+
+  /**
+   * 与 removeTargetDep 等价，但一次子树递归同时处理多个 target，
+   * 把删除阶段的结构遍历从 ×targets 降到 ×1。
+   *
+   * 注：供 editor 的 dep service 跨包批量删除时复用，因此为 public。
+   */
+  public removeTargetsDep(targets: Target[], node: TargetNode, key?: string | number) {
+    const id = node[this.idProp];
+    for (const target of targets) {
+      target.removeDep(id, key);
+    }
+    if (typeof key === 'undefined' && Array.isArray(node[this.childrenProp]) && node[this.childrenProp].length) {
+      for (const item of node[this.childrenProp] as TargetNode[]) {
+        this.removeTargetsDep(targets, item, key);
+      }
+    }
+  }
+
+  /**
+   * 与 collectItem 等价，但一次遍历同时处理多个 target（不含删除阶段）。
+   *
+   * 关键优化：原实现对每个 target 都完整遍历一遍节点树（O(targets × 树规模)），大页面 + 大量数据源时，
+   * 结构遍历（Object.entries / 递归 / fullKey 字符串拼接）会被重复 targets 次。这里改为「整棵树只遍历一次，
+   * 在每个属性上检查所有 target」，把结构遍历开销从 ×targets 降到 ×1，isTarget 调用次数不变，收集结果完全一致。
+   *
+   * 注：供 editor 的 dep service / worker 跨包批量收集时复用，因此为 public。
+   */
+  public collectItems(node: TargetNode, targets: Target[], depExtendedData: DepExtendedData = {}, deep = false) {
+    // 对应 collectItem 开头的 NODE_DISABLE_* 判断：被禁用的 target 在该节点及其子树都不收集
+    const activeTargets = this.filterTargetsByNode(node, targets);
+
+    if (!activeTargets.length) {
+      return;
+    }
+
+    this.collectTargetForTargets(node, node, '', activeTargets, depExtendedData, deep);
+  }
+
+  private filterTargetsByNode(node: TargetNode, targets: Target[]): Target[] {
+    const disableDataSource = Boolean(node[NODE_DISABLE_DATA_SOURCE_KEY]);
+    const disableCodeBlock = Boolean(node[NODE_DISABLE_CODE_BLOCK_KEY]);
+
+    if (!disableDataSource && !disableCodeBlock) {
+      return targets;
+    }
+
+    return targets.filter((target) => {
+      if (disableDataSource && DATA_SOURCE_TARGET_TYPES.has(target.type)) {
+        return false;
+      }
+      if (disableCodeBlock && target.type === DepTargetType.CODE_BLOCK) {
+        return false;
+      }
+      return true;
     });
   }
 
-  private collectItem(node: Record<string | number, any>, target: Target, deep = false) {
-    const collectTarget = (config: Record<string | number, any>, prop = '') => {
-      const doCollect = (key: string, value: any) => {
-        const keyIsItems = key === 'items';
-        const fullKey = prop ? `${prop}.${key}` : key;
+  private collectTargetForTargets(
+    node: TargetNode,
+    config: Record<string | number, any>,
+    prop: string,
+    targets: Target[],
+    depExtendedData: DepExtendedData,
+    deep: boolean,
+  ) {
+    const id = node[this.idProp];
+    const name = `${node[this.nameProp] || node[this.idProp]}`;
 
-        if (target.isTarget(fullKey, value)) {
-          target.updateDep(node, fullKey);
-        } else if (!keyIsItems && Array.isArray(value)) {
-          value.forEach((item, index) => {
+    for (const [key, value] of Object.entries(config)) {
+      if (typeof value === 'undefined' || value === '') continue;
+
+      const keyIsItems = key === this.childrenProp;
+      const fullKey = prop ? `${prop}.${key}` : key;
+
+      // 在该属性上检查所有 target：命中的更新依赖；未命中的留待递归到更深层
+      let notMatched: Target[] | null = null;
+      for (let i = 0, l = targets.length; i < l; i++) {
+        const target = targets[i];
+        if (target.isTarget(fullKey, value, config)) {
+          target.updateDep({
+            id,
+            name,
+            data: depExtendedData,
+            key: fullKey,
+          });
+        } else {
+          (notMatched || (notMatched = [])).push(target);
+        }
+      }
+
+      // 对应原 doCollect 的 else-if 分支：仅未命中的 target 才继续往 value 内部递归
+      if (notMatched) {
+        if (!keyIsItems && Array.isArray(value)) {
+          for (let i = 0, l = value.length; i < l; i++) {
+            const item = value[i];
             if (isObject(item)) {
-              collectTarget(item, `${fullKey}[${index}]`);
+              this.collectTargetForTargets(node, item, `${fullKey}[${i}]`, notMatched, depExtendedData, deep);
             }
-          });
+          }
         } else if (isObject(value)) {
-          collectTarget(value, fullKey);
+          this.collectTargetForTargets(node, value, fullKey, notMatched, depExtendedData, deep);
         }
+      }
 
-        if (keyIsItems && deep && Array.isArray(value)) {
-          value.forEach((child) => {
-            this.collectItem(child, target, deep);
-          });
+      // 对应原 doCollect 末尾的无条件子节点递归
+      if (keyIsItems && deep && Array.isArray(value)) {
+        for (const child of value) {
+          this.collectItems(child, targets, depExtendedData, deep);
         }
-      };
-
-      Object.entries(config).forEach(([key, value]) => {
-        if (typeof value === 'undefined' || value === '') return;
-        doCollect(key, value);
-      });
-    };
-
-    collectTarget(node);
+      }
+    }
   }
 }

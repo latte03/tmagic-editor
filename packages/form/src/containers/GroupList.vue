@@ -1,44 +1,62 @@
 <template>
-  <div class="m-fields-group-list">
+  <div
+    class="m-fields-group-list"
+    :class="{
+      'is-header-sticky': Boolean(config.header?.sticky),
+      'is-footer-sticky': isFooterSticky($slots),
+    }"
+    :style="headerVars"
+  >
     <div v-if="config.extra" v-html="config.extra" style="color: rgba(0, 0, 0, 0.45)"></div>
-    <div v-if="!model[name] || !model[name].length" class="el-table__empty-block">
-      <span class="el-table__empty-text">暂无数据</span>
+    <div v-if="!displayItems.length" class="el-table__empty-block">
+      <span class="el-table__empty-text t-table__empty">暂无{{ config.titlePrefix || '' }}数据</span>
     </div>
 
     <MFieldsGroupListItem
       v-else
-      v-for="(item, index) in model[name]"
-      :key="index"
-      :model="item"
-      :lastValues="getLastValues(lastValues[name], index)"
+      v-for="entry in displayItems"
+      :key="entry.index"
+      :model="entry.item"
+      :lastValues="entry.last"
       :is-compare="isCompare"
       :config="config"
       :prop="prop"
-      :index="index"
+      :index="entry.index"
       :label-width="labelWidth"
+      :label-position="labelPosition"
       :size="size"
       :disabled="disabled"
-      :group-model="model[name]"
+      :group-model="currentList"
       @remove-item="removeHandler"
+      @copy-item="copyHandler"
       @swap-item="swapHandler"
       @change="changeHandler"
       @addDiffCount="onAddDiffCount()"
-    ></MFieldsGroupListItem>
+    >
+      <template #title="slotProps" v-if="$slots.title">
+        <slot name="title" v-bind="slotProps"></slot>
+      </template>
+    </MFieldsGroupListItem>
 
-    <TMagicButton @click="addHandler" size="small" :disabled="disabled" v-if="addable">新增</TMagicButton>
-
-    <TMagicButton :icon="Grid" size="small" @click="toggleMode" v-if="config.enableToggleMode">切换为表格</TMagicButton>
+    <div
+      class="m-fields-group-list-footer"
+      :class="{ 'is-sticky-full': Boolean(config.addButtonConfig?.sticky) }"
+      v-if="hasFooter($slots)"
+    >
+      <slot name="toggle-button"></slot>
+      <div style="display: flex; justify-content: flex-end; flex: 1">
+        <slot name="add-button"></slot>
+      </div>
+    </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, inject } from 'vue';
-import { Grid } from '@element-plus/icons-vue';
+import { computed } from 'vue';
+import { cloneDeep } from 'lodash-es';
 
-import { TMagicButton } from '@tmagic/design';
-
-import { FormState, GroupListConfig } from '../schema';
-import { initValue } from '../utils/form';
+import type { ContainerChangeEventData, GroupListConfig } from '../schema';
+import { getGroupListHeaderVars } from '../utils/tableGroupList';
 
 import MFieldsGroupListItem from './GroupListItem.vue';
 
@@ -53,87 +71,76 @@ const props = defineProps<{
   config: GroupListConfig;
   name: string;
   labelWidth?: string;
+  labelPosition?: 'top' | 'left' | 'right';
   prop?: string;
   size?: string;
   disabled?: boolean;
+  showIndex?: boolean;
 }>();
 
-const emit = defineEmits(['change', 'addDiffCount']);
+const emit = defineEmits<{
+  change: [v: any, eventData?: ContainerChangeEventData];
+  addDiffCount: [];
+}>();
 
-const mForm = inject<FormState | undefined>('mForm');
-
-const addable = computed(() => {
-  if (!props.name) return false;
-
-  if (typeof props.config.addable === 'function') {
-    return props.config.addable(mForm, {
-      model: props.model[props.name],
-      formValue: mForm?.values,
-      prop: props.prop,
-      config: props.config,
-    });
-  }
-
-  return typeof props.config.addable === 'undefined' ? true : props.config.addable;
-});
-
-const changeHandler = () => {
-  if (!props.name) return false;
-
-  emit('change', props.model[props.name]);
-};
-
-const addHandler = async () => {
-  if (!props.name) return false;
-
-  let initValues = {};
-
-  if (typeof props.config.defaultAdd === 'function') {
-    initValues = await props.config.defaultAdd(mForm, {
-      model: props.model[props.name],
-      formValue: mForm?.values,
-      prop: props.prop,
-      config: props.config,
-    });
-  } else if (props.config.defaultAdd) {
-    initValues = props.config.defaultAdd;
-  }
-
-  const groupValue = await initValue(mForm, {
-    config: props.config.items,
-    initValues,
-  });
-
-  props.model[props.name].push(groupValue);
+const changeHandler = (v: any, eventData: ContainerChangeEventData) => {
+  emit('change', props.model, eventData);
 };
 
 const removeHandler = (index: number) => {
   if (!props.name) return false;
 
   props.model[props.name].splice(index, 1);
-  changeHandler();
+  emit('change', props.model[props.name]);
+};
+
+const copyHandler = (index: number) => {
+  props.model[props.name].push(cloneDeep(props.model[props.name][index]));
 };
 
 const swapHandler = (idx1: number, idx2: number) => {
   if (!props.name) return false;
 
-  const [currRow] = props.model[props.name].splice(idx1, 1);
-  props.model[props.name].splice(idx2, 0, currRow);
-  changeHandler();
-};
+  const { length } = props.model[props.name];
 
-const toggleMode = () => {
-  props.config.type = 'table';
-  props.config.groupItems = props.config.items;
-  props.config.items = (props.config.tableItems ||
-    props.config.items.map((item: any) => ({
-      ...item,
-      label: item.label || item.text,
-      text: null,
-    }))) as any;
+  const [currRow] = props.model[props.name].splice(idx1, 1);
+  props.model[props.name].splice(Math.min(Math.max(idx2, 0), length - 1), 0, currRow);
+  emit('change', props.model[props.name]);
 };
 
 const onAddDiffCount = () => emit('addDiffCount');
 
-const getLastValues = (item: any, index: number) => item?.[index] || {};
+const asList = (value: unknown): any[] => (Array.isArray(value) ? value : []);
+
+const headerVars = computed(() => getGroupListHeaderVars(props.config.header));
+
+/**
+ * 取 `$slots` 而不是 `useSlots()`：宿主切换 `addable` 时插槽会增删，
+ * computed 缓存不随插槽变化失效，只有在渲染期读才拿得到最新的。
+ */
+const hasFooter = (slots: Record<string, unknown>) =>
+  !props.isCompare && Boolean(slots['toggle-button'] || slots['add-button']);
+
+/** 只有真的渲染出吸底 footer，内层列表才需要为它让位 */
+const isFooterSticky = (slots: Record<string, unknown>) =>
+  hasFooter(slots) && Boolean(props.config.addButtonConfig?.sticky);
+
+const currentList = computed(() => asList(props.model[props.name]));
+
+/** 对比时按当前/历史较长一侧对齐，已删除的项也能渲染出来 */
+const displayItems = computed(() => {
+  const current = currentList.value;
+
+  if (!props.isCompare) {
+    return current.map((item, index) => ({ item: item ?? {}, last: {}, index }));
+  }
+
+  const last = asList(props.lastValues?.[props.name]);
+
+  return Array.from({ length: Math.max(current.length, last.length) }, (_, index) => ({
+    item: current[index] ?? {},
+    last: last[index] ?? {},
+    index,
+  }));
+});
 </script>

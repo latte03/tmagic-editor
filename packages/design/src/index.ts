@@ -1,13 +1,16 @@
 import type { App, Ref } from 'vue';
 import { computed, ref, unref } from 'vue';
 
-import { setConfig } from './config';
-import { PluginOptions, TMagicMessage, TMagicMessageBox } from './types';
+import { setDesignConfig } from './config';
+import { DesignPluginOptions, TMagicMessage, TMagicMessageBox } from './types';
+
+import './theme/index.scss';
 
 export * from './types';
 export * from './config';
+export * from './theme';
+export * from './formValidateMessage';
 
-/* eslint-disable @typescript-eslint/no-unused-vars */
 export { default as TMagicAutocomplete } from './Autocomplete.vue';
 export { default as TMagicBadge } from './Badge.vue';
 export { default as TMagicButton } from './Button.vue';
@@ -45,30 +48,16 @@ export { default as TMagicStep } from './Step.vue';
 export { default as TMagicSteps } from './Steps.vue';
 export { default as TMagicSwitch } from './Switch.vue';
 export { default as TMagicTable } from './Table.vue';
-export { default as TMagicTableColumn } from './TableColumn.vue';
 export { default as TMagicTabPane } from './TabPane.vue';
 export { default as TMagicTabs } from './Tabs.vue';
 export { default as TMagicTag } from './Tag.vue';
 export { default as TMagicTimePicker } from './TimePicker.vue';
 export { default as TMagicTooltip } from './Tooltip.vue';
-export { default as TMagicTree } from './Tree.vue';
 export { default as TMagicUpload } from './Upload.vue';
+export { default as TMagicPopconfirm } from './Popconfirm.vue';
 
-export const tMagicMessage = {
-  error: (msg: string) => {
-    console.error(msg);
-  },
-  success: (msg: string) => {
-    console.log(msg);
-  },
-  warning: (msg: string) => {
-    console.warn(msg);
-  },
-  info: (msg: string) => {
-    console.info(msg);
-  },
-  closeAll: (msg: string) => {},
-} as unknown as TMagicMessage;
+// eslint-disable-next-line import/no-mutable-exports
+export let tMagicMessage: TMagicMessage;
 
 export const tMagicMessageBox = {
   alert: (msg: string) => {
@@ -106,15 +95,29 @@ export let useZIndex = (zIndexOverrides?: Ref<number>) => {
   };
 };
 
+// 与 form/utils/config、editor/utils/config 里的同名变量保持一致：用 ref 持有 flat 全局开关，
+// const 引用本身不可变，规避 `no-mutable-exports` / `naming-convention` 对 `let` 模块变量的限制。
+export const isGlobalFlat = ref(false);
+
 export default {
-  install(app: App, options: PluginOptions) {
-    if (options.message) {
-      tMagicMessage.error = options.message?.error;
-      tMagicMessage.success = options.message?.success;
-      tMagicMessage.warning = options.message?.warning;
-      tMagicMessage.info = options.message?.info;
-      tMagicMessage.closeAll = options.message?.closeAll;
-    }
+  install(app: App, options: DesignPluginOptions) {
+    tMagicMessage =
+      options.message ||
+      ({
+        error: (msg: string) => {
+          console.error(msg);
+        },
+        success: (msg: string) => {
+          console.log(msg);
+        },
+        warning: (msg: string) => {
+          console.warn(msg);
+        },
+        info: (msg: string) => {
+          console.info(msg);
+        },
+        closeAll: (_msg: string) => {},
+      } as unknown as TMagicMessage);
 
     if (options.messageBox) {
       tMagicMessageBox.alert = options.messageBox?.alert;
@@ -123,7 +126,7 @@ export default {
       tMagicMessageBox.close = options.messageBox?.close;
     }
 
-    if (options.loading) {
+    if (options.loading && !app.directive('loading')) {
       app.directive('loading', options.loading);
     }
 
@@ -131,7 +134,13 @@ export default {
       useZIndex = options.useZIndex;
     }
 
+    isGlobalFlat.value = options.flat ?? false;
+
+    if (options.adapterType && globalThis.document?.documentElement) {
+      globalThis.document.documentElement.classList.add(`tmagic-adapter-${options.adapterType}`);
+    }
+
     app.config.globalProperties.$MAGIC_DESIGN = options;
-    setConfig(options);
+    setDesignConfig(options);
   },
 };

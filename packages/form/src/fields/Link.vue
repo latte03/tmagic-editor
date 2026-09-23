@@ -1,5 +1,16 @@
 <template>
-  <a v-if="config.href && !disabled" target="_blank" :href="href" :style="config.css || {}">{{ displayText }}</a>
+  <a
+    target="_blank"
+    :href="href"
+    v-if="isGlobalFlat && config.href && !disabled"
+    class="magic-admin-link"
+    :style="config.css || {}"
+  >
+    <TMagicButton link type="primary">
+      <TMagicIcon><Notebook /></TMagicIcon>{{ displayText }}
+    </TMagicButton>
+  </a>
+  <a v-else-if="config.href && !disabled" target="_blank" :href="href" :style="config.css || {}">{{ displayText }}</a>
   <span v-else-if="config.href && disabled" :style="config.disabledCss || {}">{{ displayText }}</span>
   <div v-else class="m-fields-link">
     <TMagicButton link type="primary" @click="editHandler">点击编辑</TMagicButton>
@@ -17,19 +28,21 @@
 </template>
 
 <script lang="ts" setup>
-import { computed, inject, ref } from 'vue';
+import { computed, inject, readonly, ref } from 'vue';
+import { Notebook } from '@element-plus/icons-vue';
 
-import { TMagicButton } from '@tmagic/design';
+import { TMagicButton, TMagicIcon } from '@tmagic/design';
 
 import FormDialog from '../FormDialog.vue';
 import type { FieldProps, FormState, LinkConfig } from '../schema';
+import { isGlobalFlat } from '../utils/config';
 import { useAddField } from '../utils/useAddField';
 
 defineOptions({
   name: 'MFormLink',
 });
 
-const props = defineProps<FieldProps<LinkConfig>>();
+const props = defineProps<FieldProps<LinkConfig> & { theme?: string }>();
 
 const emit = defineEmits(['change']);
 
@@ -54,7 +67,8 @@ const formConfig = computed(() => {
   if (typeof props.config.form === 'function') {
     return props.config.form(mForm, {
       model: props.model || {},
-      values: props.values || {},
+      values: mForm ? readonly(mForm.initValues) : null,
+      formValue: props.values || {},
     });
   }
   return props.config.form;

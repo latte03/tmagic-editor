@@ -3,40 +3,37 @@
 </template>
 
 <script lang="ts" setup>
-import { computed, inject, markRaw, ref } from 'vue';
+import { computed, markRaw, useTemplateRef } from 'vue';
 import { Files, Plus } from '@element-plus/icons-vue';
 
-import { isPage, isPageFragment } from '@tmagic/utils';
+import { isPageOrFragment } from '@tmagic/utils';
 
 import ContentMenu from '@editor/components/ContentMenu.vue';
+import { useServices } from '@editor/hooks/use-services';
 import FolderMinusIcon from '@editor/icons/FolderMinusIcon.vue';
-import type { ComponentGroup, MenuButton, MenuComponent, Services } from '@editor/type';
+import type { ComponentGroup, CustomContentMenuFunction, MenuButton, MenuComponent } from '@editor/type';
 import { useCopyMenu, useDeleteMenu, useMoveToMenu, usePasteMenu } from '@editor/utils/content-menu';
 
 defineOptions({
   name: 'MEditorLayerMenu',
 });
 
-const props = withDefaults(
-  defineProps<{
-    layerContentMenu: (MenuButton | MenuComponent)[];
-    customContentMenu?: (menus: (MenuButton | MenuComponent)[], type: string) => (MenuButton | MenuComponent)[];
-  }>(),
-  {
-    layerContentMenu: () => [],
-    customContentMenu: (menus: (MenuButton | MenuComponent)[]) => menus,
-  },
-);
+const props = defineProps<{
+  layerContentMenu: (MenuButton | MenuComponent)[];
+  customContentMenu: CustomContentMenuFunction;
+}>();
 
 const emit = defineEmits<{
   'collapse-all': [];
 }>();
 
-const services = inject<Services>('services');
-const menu = ref<InstanceType<typeof ContentMenu>>();
-const node = computed(() => services?.editorService.get('node'));
-const nodes = computed(() => services?.editorService.get('nodes'));
-const componentList = computed(() => services?.componentListService.getList() || []);
+const services = useServices();
+const { editorService, componentListService } = services;
+
+const menuRef = useTemplateRef<InstanceType<typeof ContentMenu>>('menu');
+const node = computed(() => editorService.get('node'));
+const nodes = computed(() => editorService.get('nodes'));
+const componentList = computed(() => componentListService.getList());
 
 const createMenuItems = (group: ComponentGroup): MenuButton[] =>
   group.items.map((component) => ({
@@ -44,11 +41,15 @@ const createMenuItems = (group: ComponentGroup): MenuButton[] =>
     type: 'button',
     icon: component.icon,
     handler: () => {
-      services?.editorService.add({
-        name: component.text,
-        type: component.type,
-        ...(component.data || {}),
-      });
+      editorService.add(
+        {
+          name: component.text,
+          type: component.type,
+          ...(component.data || {}),
+        },
+        undefined,
+        { historySource: 'tree-contextmenu' },
+      );
     },
   }));
 
@@ -60,9 +61,13 @@ const getSubMenuData = computed<MenuButton[]>(() => {
         type: 'button',
         icon: Files,
         handler: () => {
-          services?.editorService.add({
-            type: 'tab-pane',
-          });
+          editorService.add(
+            {
+              type: 'tab-pane',
+            },
+            undefined,
+            { historySource: 'tree-contextmenu' },
+          );
         },
       },
     ];
@@ -96,7 +101,7 @@ const menuData = computed<(MenuButton | MenuComponent)[]>(() =>
         type: 'button',
         text: '全部折叠',
         icon: FolderMinusIcon,
-        display: () => isPage(node.value) || isPageFragment(node.value),
+        display: () => isPageOrFragment(node.value),
         handler: () => {
           emit('collapse-all');
         },
@@ -109,9 +114,9 @@ const menuData = computed<(MenuButton | MenuComponent)[]>(() =>
         items: getSubMenuData.value,
       },
       useCopyMenu(),
-      usePasteMenu(),
-      useDeleteMenu(),
-      useMoveToMenu(services),
+      usePasteMenu('tree-contextmenu'),
+      useDeleteMenu('tree-contextmenu'),
+      useMoveToMenu(services, 'tree-contextmenu'),
       ...props.layerContentMenu,
     ],
     'layer',
@@ -119,7 +124,7 @@ const menuData = computed<(MenuButton | MenuComponent)[]>(() =>
 );
 
 const show = (e: MouseEvent) => {
-  menu.value?.show(e);
+  menuRef.value?.show(e);
 };
 
 defineExpose({

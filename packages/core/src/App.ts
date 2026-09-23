@@ -1,7 +1,7 @@
 /*
  * Tencent is pleased to support the open source community by making TMagicEditor available.
  *
- * Copyright (C) 2023 THL A29 Limited, a Tencent company.  All rights reserved.
+ * Copyright (C) 2025 Tencent.  All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,159 +18,130 @@
 
 import { EventEmitter } from 'events';
 
-import { has, isEmpty } from 'lodash-es';
+import { isEmpty } from 'lodash-es';
 
-import { createDataSourceManager, DataSourceManager } from '@tmagic/data-source';
-import {
-  ActionType,
-  type AppCore,
-  type CodeBlockDSL,
-  type CodeItemConfig,
-  type CompItemConfig,
-  type DataSourceItemConfig,
-  type DeprecatedEventConfig,
-  type EventConfig,
-  type Id,
-  type JsEngine,
-  type MApp,
-  type RequestFunction,
-} from '@tmagic/schema';
+import { createDataSourceManager, DataSourceManager, type DataSourceManagerData } from '@tmagic/data-source';
+import type { CodeBlockDSL, Id, JsEngine, MApp, RequestFunction } from '@tmagic/schema';
 
 import Env from './Env';
-import { bindCommonEventListener, isCommonMethod, triggerCommonMethod } from './events';
+import EventHelper from './EventHelper';
+import Flexible from './Flexible';
+import FlowState from './FlowState';
 import Node from './Node';
 import Page from './Page';
-import { fillBackgroundImage, isNumber, style2Obj } from './utils';
+import { AppOptionsConfig, ErrorHandler, GetNodeOptions } from './type';
+import { transformStyle as defaultTransformStyle } from './utils';
 
-interface AppOptionsConfig {
-  ua?: string;
-  config?: MApp;
-  platform?: 'editor' | 'mobile' | 'tv' | 'pc';
-  jsEngine?: JsEngine;
-  designWidth?: number;
-  curPage?: Id;
-  useMock?: boolean;
-  transformStyle?: (style: Record<string, any>) => Record<string, any>;
-  request?: RequestFunction;
-}
+class App extends EventEmitter {
+  [x: string]: any;
+  static nodeClassMap = new Map<string, typeof Node>();
 
-interface EventCache {
-  eventConfig: CompItemConfig | DeprecatedEventConfig;
-  fromCpt: any;
-  args: any[];
-}
+  public static registerNode<T extends typeof Node = typeof Node>(type: string, NodeClass: T) {
+    App.nodeClassMap.set(type, NodeClass);
+  }
 
-class App extends EventEmitter implements AppCore {
-  public env: Env = new Env();
+  public env!: Env;
   public dsl?: MApp;
   public codeDsl?: CodeBlockDSL;
   public dataSourceManager?: DataSourceManager;
-
   public page?: Page;
-
+  public pageFragments: Map<Id, Page> = new Map();
   public useMock = false;
   public platform = 'mobile';
-  public jsEngine = 'browser';
-  public designWidth = 375;
-  public request?: RequestFunction;
-
+  public jsEngine: JsEngine = 'browser';
   public components = new Map();
+  public pageFragmentContainerType = new Set(['page-fragment-container']);
+  public iteratorContainerType = new Set(['iterator-container']);
+  public request?: RequestFunction;
+  public transformStyle: (style: Record<string, any>) => Record<string, any>;
+  public eventHelper?: EventHelper;
+  public errorHandler?: ErrorHandler;
+  public nodeStoreInitialData?: () => any;
 
-  public eventQueueMap: Record<string, EventCache[]> = {};
-
-  private eventList = new Map<(fromCpt: Node, ...args: any[]) => void, string>();
+  private flexible?: Flexible;
 
   constructor(options: AppOptionsConfig) {
     super();
 
-    this.setEnv(options.ua);
+    if (options.env) {
+      this.setEnv(options.env);
+    } else {
+      this.setEnv(options.ua);
+    }
+
+    this.errorHandler = options.errorHandler;
+
     // 代码块描述内容在dsl codeBlocks字段
     this.codeDsl = options.config?.codeBlocks;
     options.platform && (this.platform = options.platform);
     options.jsEngine && (this.jsEngine = options.jsEngine);
+    options.nodeStoreInitialData && (this.nodeStoreInitialData = options.nodeStoreInitialData);
+
+    if (options.pageFragmentContainerType) {
+      const pageFragmentContainerType = Array.isArray(options.pageFragmentContainerType)
+        ? options.pageFragmentContainerType
+        : [options.pageFragmentContainerType];
+      pageFragmentContainerType.forEach((type) => {
+        this.pageFragmentContainerType.add(type);
+      });
+    }
+
+    if (options.iteratorContainerType) {
+      const iteratorContainerType = Array.isArray(options.iteratorContainerType)
+        ? options.iteratorContainerType
+        : [options.iteratorContainerType];
+      iteratorContainerType.forEach((type) => {
+        this.iteratorContainerType.add(type);
+      });
+    }
 
     if (typeof options.useMock === 'boolean') {
       this.useMock = options.useMock;
     }
 
-    if (typeof options.designWidth !== 'undefined') {
-      this.setDesignWidth(options.designWidth);
+    if (this.jsEngine === 'browser' && !options.disabledFlexible) {
+      this.flexible = new Flexible({ designWidth: options.designWidth });
     }
 
-    if (options.transformStyle) {
-      this.transformStyle = options.transformStyle;
+    if (this.platform !== 'editor') {
+      this.eventHelper = new EventHelper({
+        app: this,
+        beforeEventHandler: options.beforeEventHandler,
+        afterEventHandler: options.afterEventHandler,
+      });
     }
+
+    this.transformStyle =
+      options.transformStyle || ((style: Record<string, any>) => defaultTransformStyle(style, this.jsEngine));
 
     if (options.request) {
       this.request = options.request;
     }
 
     if (options.config) {
-      this.setConfig(options.config, options.curPage);
+      this.setConfig(options.config, options.curPage, options.dataSourceManagerInitialData);
     }
-
-    bindCommonEventListener(this);
   }
 
-  public setEnv(ua?: string) {
-    this.env = new Env(ua);
+  public setEnv<T extends Env>(ua?: string | T) {
+    if (!ua || typeof ua === 'string') {
+      this.env = new Env(ua);
+    } else {
+      this.env = ua;
+    }
   }
 
   public setDesignWidth(width: number) {
-    this.designWidth = width;
-    // 根据屏幕大小计算出跟节点的font-size，用于rem样式的适配
-    if (this.jsEngine === 'browser') {
-      this.calcFontsize();
-      globalThis.removeEventListener('resize', this.calcFontsize);
-      globalThis.addEventListener('resize', this.calcFontsize);
-    }
-  }
-
-  /**
-   * 将dsl中的style配置转换成css，主要是将数值转成rem为单位的样式值，例如100将被转换成1rem
-   * @param style Object
-   * @returns Object
-   */
-  public transformStyle(style: Record<string, any> | string) {
-    if (!style) {
-      return {};
-    }
-
-    let styleObj: Record<string, any> = {};
-    const results: Record<string, any> = {};
-
-    if (typeof style === 'string') {
-      styleObj = style2Obj(style);
-    } else {
-      styleObj = { ...style };
-    }
-
-    const isHippy = this.jsEngine === 'hippy';
-
-    const whiteList = ['zIndex', 'opacity', 'fontWeight'];
-    Object.entries(styleObj).forEach(([key, value]) => {
-      if (key === 'scale' && !results.transform && isHippy) {
-        results.transform = [{ scale: value }];
-      } else if (key === 'backgroundImage' && !isHippy) {
-        value && (results[key] = fillBackgroundImage(value));
-      } else if (key === 'transform' && typeof value !== 'string') {
-        results[key] = this.getTransform(value);
-      } else if (!whiteList.includes(key) && value && /^[-]?[0-9]*[.]?[0-9]*$/.test(value)) {
-        results[key] = isHippy ? value : `${value / 100}rem`;
-      } else {
-        results[key] = value;
-      }
-    });
-
-    return results;
+    this.flexible?.setDesignWidth(width);
   }
 
   /**
    * 设置dsl
    * @param config dsl跟节点
    * @param curPage 当前页面id
+   * @param initialData 数据源初始数据源
    */
-  public setConfig(config: MApp, curPage?: Id) {
+  public setConfig(config: MApp, curPage?: Id, initialData?: DataSourceManagerData) {
     this.dsl = config;
 
     if (!curPage && config.items.length) {
@@ -181,36 +152,43 @@ class App extends EventEmitter implements AppCore {
       this.dataSourceManager.destroy();
     }
 
-    this.dataSourceManager = createDataSourceManager(this, this.useMock);
+    this.dataSourceManager = createDataSourceManager(this, this.useMock, initialData);
 
     this.codeDsl = config.codeBlocks;
-    this.setPage(curPage || this.page?.data?.id);
-  }
 
-  /**
-   * 留着为了兼容，不让报错
-   * @deprecated
-   */
-  public addPage() {
-    console.info('addPage 已经弃用');
+    const pageId = curPage || this.page?.data?.id;
+
+    super.emit('dsl-change', { dsl: config, curPage: pageId });
+
+    this.pageFragments.forEach((page) => {
+      page.destroy();
+    });
+    this.pageFragments.clear();
+    this.setPage(pageId);
+
+    if (this.dataSourceManager) {
+      if (this.dataSourceManager.isAllDataSourceRegistered()) {
+        this.eventHelper?.bindDataSourceEvents();
+      } else {
+        this.dataSourceManager.once('registered-all', () => {
+          this.eventHelper?.bindDataSourceEvents();
+        });
+      }
+    }
   }
 
   public setPage(id?: Id) {
     const pageConfig = this.dsl?.items.find((page) => `${page.id}` === `${id}`);
 
     if (!pageConfig) {
-      if (this.page) {
-        this.page.destroy();
-        this.page = undefined;
-      }
+      this.deletePage();
 
       super.emit('page-change');
       return;
     }
 
-    if (pageConfig === this.page?.data) return;
-
     if (this.page) {
+      if (pageConfig === this.page.data) return;
       this.page.destroy();
     }
 
@@ -219,12 +197,14 @@ class App extends EventEmitter implements AppCore {
       app: this,
     });
 
-    super.emit('page-change', this.page);
+    this.eventHelper?.initEvents();
 
-    this.bindEvents();
+    super.emit('page-change', this.page);
   }
 
   public deletePage() {
+    this.page?.destroy();
+    this.eventHelper?.removeNodeEvents();
     this.page = undefined;
   }
 
@@ -240,6 +220,10 @@ class App extends EventEmitter implements AppCore {
     }
   }
 
+  public getNode<T extends Node = Node>(id: Id, options?: GetNodeOptions) {
+    return this.page?.getNode<T>(id, options);
+  }
+
   public registerComponent(type: string, Component: any) {
     this.components.set(type, Component);
   }
@@ -248,36 +232,19 @@ class App extends EventEmitter implements AppCore {
     this.components.delete(type);
   }
 
-  public resolveComponent(type: string) {
-    return this.components.get(type);
-  }
-
-  public bindEvents() {
-    Array.from(this.eventList.keys()).forEach((handler) => {
-      const name = this.eventList.get(handler);
-      name && this.off(name, handler);
-    });
-
-    this.eventList.clear();
-
-    if (!this.page) return;
-
-    for (const [, value] of this.page.nodes) {
-      value.events?.forEach((event) => {
-        const eventName = `${event.name}_${value.data.id}`;
-        const eventHandler = (fromCpt: Node, ...args: any[]) => {
-          this.eventHandler(event, fromCpt, args);
-        };
-        this.eventList.set(eventHandler, eventName);
-        this.on(eventName, eventHandler);
-      });
-    }
+  public resolveComponent<T = any>(type: string) {
+    return this.components.get(type) as T;
   }
 
   public emit(name: string | symbol, ...args: any[]): boolean {
     const [node, ...otherArgs] = args;
-    if (node instanceof Node && node?.data?.id) {
-      return super.emit(`${String(name)}_${node.data.id}`, node, ...otherArgs);
+    if (
+      this.eventHelper &&
+      node instanceof Node &&
+      node.data?.id &&
+      node.eventKeys.has(`${String(name)}_${node.data.id}`)
+    ) {
+      this.eventHelper.emit(node.eventKeys.get(`${String(name)}_${node.data.id}`)!, node, ...otherArgs);
     }
     return super.emit(name, ...args);
   }
@@ -287,133 +254,82 @@ class App extends EventEmitter implements AppCore {
    * @param eventConfig 代码动作的配置
    * @returns void
    */
-  public async codeActionHandler(eventConfig: CodeItemConfig, args: any[]) {
-    const { codeId = '', params = {} } = eventConfig;
-    if (!codeId || isEmpty(this.codeDsl)) return;
+  public async runCode(codeId: Id, params: Record<string, any>, args: any[], flowState?: FlowState, node?: Node) {
+    if (!codeId || isEmpty(this.codeDsl)) {
+      return;
+    }
+
     const content = this.codeDsl?.[codeId]?.content;
+
     if (typeof content === 'function') {
-      await content({ app: this, params, eventParams: args });
-    }
-  }
-
-  /**
-   * 执行联动组件动作
-   * @param eventConfig 联动组件的配置
-   * @returns void
-   */
-  public async compActionHandler(eventConfig: CompItemConfig | DeprecatedEventConfig, fromCpt: any, args: any[]) {
-    if (!this.page) throw new Error('当前没有页面');
-
-    const { method: methodName, to } = eventConfig;
-    const toNode = this.page.getNode(to);
-    if (!toNode) throw `ID为${to}的组件不存在`;
-
-    if (isCommonMethod(methodName)) {
-      return triggerCommonMethod(methodName, toNode);
-    }
-
-    if (toNode.instance) {
-      if (typeof toNode.instance[methodName] === 'function') {
-        await toNode.instance[methodName](fromCpt, ...args);
+      try {
+        await content({ app: this, params, eventParams: args, flowState, node });
+      } catch (e: any) {
+        if (this.errorHandler) {
+          this.errorHandler(e, undefined, { type: 'run-code', codeId, params, eventParams: args, flowState, node });
+        } else {
+          throw e;
+        }
       }
-    } else {
-      this.addEventToMap({
-        eventConfig,
-        fromCpt,
-        args,
-      });
     }
   }
 
-  public async dataSourceActionHandler(eventConfig: DataSourceItemConfig, args: any[]) {
-    const { dataSourceMethod = [], params = {} } = eventConfig;
+  public async runDataSourceMethod(
+    dsId: string,
+    methodName: string,
+    params: Record<string, any>,
+    args: any[],
+    flowState?: FlowState,
+    node?: Node,
+  ) {
+    if (!dsId || !methodName) return;
 
-    const [id, methodName] = dataSourceMethod;
-
-    if (!id || !methodName) return;
-
-    const dataSource = this.dataSourceManager?.get(id);
+    const dataSource = this.dataSourceManager?.get(dsId);
 
     if (!dataSource) return;
 
-    const methods = dataSource.methods || [];
+    try {
+      const methods = dataSource.methods || [];
 
-    const method = methods.find((item) => item.name === methodName);
+      const method = methods.find((item) => item.name === methodName);
+      if (method && typeof method.content === 'function') {
+        return await method.content({ app: this, params, dataSource, eventParams: args, flowState, node });
+      }
 
-    if (!method) return;
-
-    if (typeof method.content === 'function') {
-      await method.content({ app: this, params, dataSource, eventParams: args });
+      if (typeof dataSource[methodName] === 'function') {
+        return await dataSource[methodName]({ params });
+      }
+    } catch (e: any) {
+      if (this.errorHandler) {
+        this.errorHandler(e, dataSource, { type: 'data-source-method', params, eventParams: args, flowState, node });
+      } else {
+        throw e;
+      }
     }
   }
 
   public destroy() {
     this.removeAllListeners();
+    this.page?.destroy();
     this.page = undefined;
-
-    if (this.jsEngine === 'browser') {
-      globalThis.removeEventListener('resize', this.calcFontsize);
-    }
-  }
-
-  /**
-   * 事件联动处理函数
-   * @param eventConfig 事件配置
-   * @param fromCpt 触发事件的组件
-   * @param args 事件参数
-   */
-  private async eventHandler(eventConfig: EventConfig | DeprecatedEventConfig, fromCpt: any, args: any[]) {
-    if (has(eventConfig, 'actions')) {
-      // EventConfig类型
-      const { actions } = eventConfig as EventConfig;
-      for (const actionItem of actions) {
-        if (actionItem.actionType === ActionType.COMP) {
-          // 组件动作
-          await this.compActionHandler(actionItem as CompItemConfig, fromCpt, args);
-        } else if (actionItem.actionType === ActionType.CODE) {
-          // 执行代码块
-          await this.codeActionHandler(actionItem as CodeItemConfig, args);
-        } else if (actionItem.actionType === ActionType.DATA_SOURCE) {
-          await this.dataSourceActionHandler(actionItem as DataSourceItemConfig, args);
-        }
-      }
-    } else {
-      // 兼容DeprecatedEventConfig类型 组件动作
-      await this.compActionHandler(eventConfig as DeprecatedEventConfig, fromCpt, args);
-    }
-  }
-
-  private addEventToMap(event: EventCache) {
-    if (this.eventQueueMap[event.eventConfig.to]) {
-      this.eventQueueMap[event.eventConfig.to].push(event);
-    } else {
-      this.eventQueueMap[event.eventConfig.to] = [event];
-    }
-  }
-
-  private getTransform(value: Record<string, string>) {
-    if (!value) return [];
-
-    const transform = Object.entries(value).map(([transformKey, transformValue]) => {
-      if (!transformValue.trim()) return '';
-      if (transformKey === 'rotate' && isNumber(transformValue)) {
-        transformValue = `${transformValue}deg`;
-      }
-
-      return this.jsEngine !== 'hippy' ? `${transformKey}(${transformValue})` : { [transformKey]: transformValue };
+    this.pageFragments.forEach((page) => {
+      page.destroy();
     });
+    this.pageFragments.clear();
 
-    if (this.jsEngine === 'hippy') {
-      return transform;
-    }
-    const values = transform.join(' ');
-    return !values.trim() ? 'none' : values;
-  }
+    this.flexible?.destroy();
+    this.flexible = undefined;
 
-  private calcFontsize() {
-    const { width } = document.documentElement.getBoundingClientRect();
-    const fontSize = width / (this.designWidth / 100);
-    document.documentElement.style.fontSize = `${fontSize}px`;
+    this.eventHelper?.destroy();
+
+    this.dsl = undefined;
+
+    this.dataSourceManager?.destroy();
+    this.dataSourceManager = undefined;
+    this.codeDsl = undefined;
+    this.components.clear();
+
+    this.nodeStoreInitialData = undefined;
   }
 }
 

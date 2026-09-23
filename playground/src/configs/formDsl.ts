@@ -1,4 +1,4 @@
-import { createForm } from '@tmagic/form';
+import { createForm } from '@tmagic/editor';
 
 export default createForm([
   {
@@ -8,6 +8,16 @@ export default createForm([
     extra: (vm: any, { model }: any) => `${model.text}extra`,
     rules: [{ required: true, message: '请输入活动名称', trigger: 'blur' }],
   },
+  // `img-upload` 是 playground 自定义业务字段，未在 `FormItemConfig` 联合里注册；
+  // `checkStrictly` 又是 `DataSourceFieldSelectConfig` 的专属字段，会把 TS 收窄到该
+  // 分支再报「type 不匹配」。这里用 `as any` 放过，正式工程里应通过 `createForm<T>`
+  // 的泛型把自定义类型并入。
+  {
+    type: 'img-upload',
+    checkStrictly: false,
+    name: 'backgroundImage',
+    text: '背景图',
+  } as any,
   {
     type: 'checkbox',
     text: 'checkbox',
@@ -56,8 +66,8 @@ export default createForm([
   {
     type: 'daterange',
     text: '日期范围',
-    name: 'daterange',
-    // names: ['one', 'two'],
+    // name: 'daterange',
+    names: ['one', 'two'],
   },
   {
     type: 'time',
@@ -190,8 +200,28 @@ export default createForm([
     ],
   },
   {
+    type: 'tab',
+    name: 'tab',
+    editable: true,
+    dynamic: true,
+    active: '0',
+    tabType: 'border-card',
+    items: [
+      {
+        name: 'xx',
+        items: [
+          {
+            name: 'text',
+            text: 'text',
+          },
+        ],
+      },
+    ],
+  },
+  {
     type: 'table',
     name: 'table',
+    copyable: true,
     defautSort: { prop: 'name', order: 'descending' },
     extra: 'extra',
     itemExtra: (vm: any, { model }: any): any => `${model.text}itemExtra`,
@@ -213,6 +243,8 @@ export default createForm([
     type: 'groupList',
     name: 'groupList',
     extra: '分组xxxxxxxxxxxx',
+    copyable: true,
+    moveSpecifyLocation: true,
     itemExtra: (vm: any, { model }: any) => `${model.name}extra`,
     items: [
       {

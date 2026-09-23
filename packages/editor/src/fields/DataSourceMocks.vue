@@ -1,21 +1,22 @@
 <template>
   <div class="m-editor-data-source-fields">
-    <MagicTable :data="model[name]" :columns="columns"></MagicTable>
+    <MagicTable :data="model[name]" :columns="displayColumns"></MagicTable>
 
-    <div class="m-editor-data-source-fields-footer">
+    <div v-if="!isCompare" class="m-editor-data-source-fields-footer">
       <TMagicButton size="small" type="primary" :disabled="disabled" plain @click="newHandler()">添加</TMagicButton>
     </div>
 
     <FloatingBox
+      :body-style="{ padding: '0 16px' }"
       v-model:visible="addDialogVisible"
       v-model:width="width"
       v-model:height="editorHeight"
       :title="drawerTitle"
+      :framework-width="frameworkWidth"
       :position="boxPosition"
     >
       <template #body>
         <MFormBox
-          ref="addDialog"
           label-width="120px"
           :config="formConfig"
           :values="formValues"
@@ -29,18 +30,18 @@
 </template>
 
 <script setup lang="ts">
-import { inject, Ref, ref } from 'vue';
+import { computed, inject, Ref, ref } from 'vue';
 
+import type { MockSchema } from '@tmagic/core';
 import { TMagicButton, tMagicMessageBox, TMagicSwitch } from '@tmagic/design';
-import { type FieldProps, type FormConfig, type FormState, MFormBox } from '@tmagic/form';
-import type { MockSchema } from '@tmagic/schema';
+import { type DataSourceMocksConfig, type FieldProps, type FormConfig, type FormState, MFormBox } from '@tmagic/form';
 import { type ColumnConfig, MagicTable } from '@tmagic/table';
 import { getDefaultValueFromFields } from '@tmagic/utils';
 
 import FloatingBox from '@editor/components/FloatingBox.vue';
 import { useNextFloatBoxPosition } from '@editor/hooks/use-next-float-box-position';
+import { useServices } from '@editor/hooks/use-services';
 import CodeEditor from '@editor/layouts/CodeEditor.vue';
-import { Services } from '@editor/type';
 
 import { useEditorContentHeight } from '..';
 
@@ -48,20 +49,18 @@ defineOptions({
   name: 'MFieldsDataSourceMocks',
 });
 
-const props = withDefaults(
-  defineProps<
-    FieldProps<{
-      type: 'data-source-mocks';
-    }>
-  >(),
-  {
-    disabled: false,
-  },
-);
+const props = withDefaults(defineProps<FieldProps<DataSourceMocksConfig>>(), {
+  disabled: false,
+});
 
 const emit = defineEmits(['change']);
 
-const services = inject<Services>('services');
+const { uiService } = useServices();
+const mForm = inject<FormState | undefined>('mForm');
+
+/** 对比模式下隐藏新增/编辑/删除等操作按钮，仅保留只读展示。 */
+const isCompare = computed(() => Boolean(mForm?.isCompare));
+
 const width = defineModel<number>('width', { default: 670 });
 
 const drawerTitle = ref('');
@@ -104,7 +103,7 @@ const formConfig: FormConfig = [
     language: 'json',
     options: inject('codeOptions', {}),
     defaultValue: '{}',
-    height: '400px',
+    autosize: { minRows: 30, maxRows: 50 },
     onChange: (formState: FormState | undefined, v: string | any) => {
       if (typeof v !== 'string') return v;
       return JSON.parse(v);
@@ -210,6 +209,11 @@ const columns: ColumnConfig[] = [
   },
 ];
 
+/** 对比模式下移除「操作」列（编辑/删除按钮），仅保留只读列。 */
+const displayColumns = computed<ColumnConfig[]>(() =>
+  isCompare.value ? columns.filter((col) => !col.actions) : columns,
+);
+
 const newHandler = () => {
   const isFirstRow = props.model[props.name].length === 0;
   formValues.value = {
@@ -251,5 +255,6 @@ const toggleValue = (row: MockSchema, key: 'enable' | 'useInEditor', value: bool
 const addDialogVisible = defineModel<boolean>('visible', { default: false });
 const { height: editorHeight } = useEditorContentHeight();
 const parentFloating = inject<Ref<HTMLDivElement | null>>('parentFloating', ref(null));
-const { boxPosition, calcBoxPosition } = useNextFloatBoxPosition(services?.uiService, parentFloating);
+const { boxPosition, calcBoxPosition } = useNextFloatBoxPosition(uiService, parentFloating);
+const frameworkWidth = computed(() => uiService.get('frameworkRect')?.width || 0);
 </script>

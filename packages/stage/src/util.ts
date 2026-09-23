@@ -1,7 +1,7 @@
 /*
  * Tencent is pleased to support the open source community by making TMagicEditor available.
  *
- * Copyright (C) 2023 THL A29 Limited, a Tencent company.  All rights reserved.
+ * Copyright (C) 2025 Tencent.  All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,7 +15,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-import { removeClassName } from '@tmagic/utils';
+import { getIdFromEl, removeClassName } from '@tmagic/core';
 
 import { GHOST_EL_ID_PREFIX, Mode, SELECTED_CLASS, ZIndex } from './const';
 import type { Offset, SortEventData, TargetElement } from './types';
@@ -88,13 +88,13 @@ export const getAbsolutePosition = (el: HTMLElement, { top, left }: Offset) => {
   return { left, top };
 };
 
-export const isAbsolute = (style: CSSStyleDeclaration): boolean => style.position === 'absolute';
+export const isAbsolute = (style: { position?: string }): boolean => style.position === 'absolute';
 
-export const isRelative = (style: CSSStyleDeclaration): boolean => style.position === 'relative';
+export const isRelative = (style: { position?: string }): boolean => style.position === 'relative';
 
-export const isStatic = (style: CSSStyleDeclaration): boolean => style.position === 'static';
+export const isStatic = (style: { position?: string }): boolean => style.position === 'static';
 
-export const isFixed = (style: CSSStyleDeclaration): boolean => style.position === 'fixed';
+export const isFixed = (style: { position?: string }): boolean => style.position === 'fixed';
 
 export const isFixedParent = (el: Element) => {
   let fixed = false;
@@ -126,7 +126,7 @@ export const getScrollParent = (element: HTMLElement, includeHidden = false): HT
 
   if (isFixed(style)) return null;
 
-  for (let parent = element; parent.parentElement; ) {
+  for (let parent = element; parent.parentElement;) {
     parent = parent.parentElement;
 
     if (parent.tagName === 'HTML') return parent;
@@ -139,6 +139,77 @@ export const getScrollParent = (element: HTMLElement, includeHidden = false): HT
   }
 
   return null;
+};
+
+/**
+ * 判断文档是否可见
+ * @description 浏览器 tab 切到后台、窗口最小化时文档 visibilityState 为 hidden；
+ * 只将 hidden 视为不可见，避免 prerender 等中间态被误判
+ * @param doc 目标文档
+ */
+export const isDocumentVisible = (doc: Document | null | undefined): boolean => doc?.visibilityState !== 'hidden';
+
+/**
+ * 判断元素是否可见
+ * @description 元素未挂载到文档、或其自身/祖先被 display:none、visibility:hidden 隐藏时视为不可见；
+ * 优先使用浏览器提供的 checkVisibility，不支持时退化为沿祖先链检查计算样式
+ * @param el 目标元素
+ */
+export const isElementVisible = (el: Element | null | undefined): boolean => {
+  if (!el?.isConnected) return false;
+
+  if (typeof el.checkVisibility === 'function') {
+    return el.checkVisibility({ checkVisibilityCSS: true });
+  }
+
+  for (let node: Element | null = el; node; node = node.parentElement) {
+    const { display, visibility } = getComputedStyle(node);
+    if (display === 'none' || visibility === 'hidden') return false;
+  }
+
+  return true;
+};
+
+/**
+ * 将元素滚动到指定滚动容器的可视区域内（仅垂直方向，滚动最小距离）
+ * @description 与原生 scrollIntoView 不同，只滚动指定的容器自身，不会连带滚动外层祖先滚动容器，
+ * 避免编辑器画布外层容器（如 stage 外层使用 transform 模拟滚动的容器）被浏览器自动滚动导致整个画布位移
+ * @param el 目标元素
+ * @param container 滚动容器
+ */
+export const scrollElementIntoView = (el: Element, container: HTMLElement): void => {
+  const { ownerDocument } = container;
+  const win = ownerDocument?.defaultView;
+  if (!ownerDocument || !win) return;
+
+  const elRect = el.getBoundingClientRect();
+
+  let viewTop = 0;
+  let viewHeight = 0;
+
+  if (container === ownerDocument.documentElement || container === ownerDocument.body) {
+    // 文档滚动元素的可视区域为窗口视口
+    viewTop = 0;
+    viewHeight = win.innerHeight;
+  } else {
+    const containerRect = container.getBoundingClientRect();
+    viewTop = containerRect.top + container.clientTop;
+    viewHeight = container.clientHeight;
+  }
+
+  const viewBottom = viewTop + viewHeight;
+
+  let delta = 0;
+  if (elRect.top < viewTop) {
+    delta = elRect.top - viewTop;
+  } else if (elRect.bottom > viewBottom) {
+    // 元素高度超过可视区域高度时，优先保证元素顶部可见
+    delta = Math.min(elRect.bottom - viewBottom, elRect.top - viewTop);
+  }
+
+  if (delta !== 0) {
+    container.scrollTop += delta;
+  }
 };
 
 export const removeSelectedClassName = (doc: Document) => {
@@ -161,17 +232,6 @@ export const addSelectedClassName = (el: Element, doc: Document) => {
   });
 };
 
-export const calcValueByFontsize = (doc: Document, value: number) => {
-  const { fontSize } = doc.documentElement.style;
-
-  if (fontSize) {
-    const times = globalThis.parseFloat(fontSize) / 100;
-    return Number((value / times).toFixed(2));
-  }
-
-  return value;
-};
-
 /**
  * 下移组件位置
  * @param {number} deltaTop 偏移量
@@ -181,7 +241,7 @@ export const down = (deltaTop: number, target: TargetElement): SortEventData => 
   let swapIndex = 0;
   let addUpH = target.clientHeight;
   const brothers = Array.from(target.parentNode?.children || []).filter(
-    (node) => !node.id.startsWith(GHOST_EL_ID_PREFIX),
+    (child) => !getIdFromEl()(child as HTMLElement)?.startsWith(GHOST_EL_ID_PREFIX),
   );
   const index = brothers.indexOf(target);
   // 往下移动
@@ -200,9 +260,12 @@ export const down = (deltaTop: number, target: TargetElement): SortEventData => 
     addUpH += ele.clientHeight / 2;
     swapIndex = i;
   }
+
+  const src = getIdFromEl()(target) || '';
+
   return {
-    src: target.id,
-    dist: downEls.length && swapIndex > -1 ? downEls[swapIndex].id : target.id,
+    src,
+    dist: downEls.length && swapIndex > -1 ? getIdFromEl()(downEls[swapIndex]) || '' : src,
   };
 };
 
@@ -215,7 +278,7 @@ export const down = (deltaTop: number, target: TargetElement): SortEventData => 
  */
 export const up = (deltaTop: number, target: TargetElement): SortEventData => {
   const brothers = Array.from(target.parentNode?.children || []).filter(
-    (node) => !node.id.startsWith(GHOST_EL_ID_PREFIX),
+    (child) => !getIdFromEl()(child as HTMLElement)?.startsWith(GHOST_EL_ID_PREFIX),
   );
   const index = brothers.indexOf(target);
   // 往上移动
@@ -236,9 +299,12 @@ export const up = (deltaTop: number, target: TargetElement): SortEventData => {
 
     swapIndex = i;
   }
+
+  const src = getIdFromEl()(target) || '';
+
   return {
-    src: target.id,
-    dist: upEls.length && swapIndex > -1 ? upEls[swapIndex].id : target.id,
+    src,
+    dist: upEls.length && swapIndex > -1 ? getIdFromEl()(upEls[swapIndex]) || '' : src,
   };
 };
 

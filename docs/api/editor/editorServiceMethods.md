@@ -1,19 +1,62 @@
 # editorService方法
 
+## 历史记录相关 options
+
+下列 DSL 操作方法（[add](#add)、[remove](#remove)、[update](#update) 等）的 `options` / `data` 参数，以及
+[codeBlockService](./codeBlockServiceMethods.md) / [dataSourceService](./dataSourceServiceMethods.md)
+的 `options`，在 `doNotPushHistory` 之外还可传入：
+
+- `{string}` **historyDescription**：入栈时附带的人类可读描述，用于历史面板展示；不影响 undo/redo 行为，缺省时面板会自动生成描述
+- `{HistoryOpSource}` **historySource**：操作途径，用于历史面板展示与埋点；不影响 undo/redo 行为，缺省时面板视为「未知」
+
+编辑器内置交互（画布、树面板、配置面板、右键菜单、快捷键等）会自动传入对应的 `historySource`；
+业务侧程序化调用时建议显式传入（如 `api`），便于历史面板区分来源。
+
+## 历史记录 uuid 与 \*AndGetHistoryId
+
+每条历史记录入栈时都会自动生成一个唯一标识 `uuid`（见 [StepValue](#undo)），可用于精确引用 / 定位某一条历史记录（如埋点、回滚、跨端同步等）。
+
+DSL 操作方法（`add` / `remove` / `update` 等）默认返回操作结果（节点 / 节点集合 / void），不会返回 `uuid`。若需要同时拿到原操作结果与本次写入历史记录的 `uuid`，可改用对应的 `*AndGetHistoryId` 方法：它们与原方法行为完全一致，返回值类型为 [`DslOpWithHistoryIdsResult<T>`](#历史记录-uuid-与-andgethistoryid)（`result` 为原方法返回值，`historyIds` 为本次写入的 uuid 列表）。当本次操作未写入历史（`doNotPushHistory: true`、无实际变更或提前返回）时 `historyIds` 为 `[]`；单次操作通常返回含一个 uuid 的数组。
+
+| 原方法 | 取 uuid 的方法 | 返回值 |
+| --- | --- | --- |
+| [add](#add) | [addAndGetHistoryId](#addandgethistoryid) | `Promise<DslOpWithHistoryIdsResult<MNode \| MNode[]>>` |
+| [remove](#remove) | [removeAndGetHistoryId](#removeandgethistoryid) | `Promise<DslOpWithHistoryIdsResult<void>>` |
+| [update](#update) | [updateAndGetHistoryId](#updateandgethistoryid) | `Promise<DslOpWithHistoryIdsResult<MNode \| MNode[]>>` |
+| [moveLayer](#movelayer) | [moveLayerAndGetHistoryId](#movelayerandgethistoryid) | `Promise<DslOpWithHistoryIdsResult<void>>` |
+| [moveToContainer](#movetocontainer) | [moveToContainerAndGetHistoryId](#movetocontainerandgethistoryid) | `Promise<DslOpWithHistoryIdsResult<MNode \| MNode[]>>` |
+| [dragTo](#dragto) | [dragToAndGetHistoryId](#dragtoandgethistoryid) | `Promise<DslOpWithHistoryIdsResult<void>>` |
+
+[dataSourceService](./dataSourceServiceMethods.md) / [codeBlockService](./codeBlockServiceMethods.md) 也提供了同名约定的 `*AndGetHistoryId` 方法，返回值约定相同（`result` + `historyIds`）。
+
+拿到 `uuid` 后，可在需要时按 uuid「回滚」对应的历史记录（类 git revert 语义，详见[历史记录面板](../../guide/advanced/history-list.md)）。相比按 index 回滚，uuid 不会随栈内步骤增删而变化，更适合业务侧持有引用后再回滚：
+
+- 页面：[editorService.revertPageStepById(uuids)](#revertpagestepbyid)
+- 数据源：[dataSourceService.revertById(uuids)](./dataSourceServiceMethods.md#revertbyid)
+- 代码块：[codeBlockService.revertById(uuids)](./codeBlockServiceMethods.md#revertbyid)
+
+::: details 查看 HistoryOpOptions / DslOpOptions / DslOpWithHistoryIdsResult / HistoryOpSource 类型定义
+<<< @/../packages/editor/src/type.ts#HistoryOpOptions{ts}
+
+<<< @/../packages/editor/src/type.ts#DslOpOptions{ts}
+
+<<< @/../packages/editor/src/type.ts#DslOpWithHistoryIdsResult{ts}
+
+<<< @/../packages/editor/src/type.ts#HistoryOpSource{ts}
+:::
+
 ## get
 
 - **参数：**
-
-  - `{'root' | 'page' | 'parent' | 'node' | 'highlightNode' | 'nodes' | 'modifiedNodeIds' | 'pageLength' | 'stage'} name`
+  - `{'root' | 'page' | 'parent' | 'node' | 'highlightNode' | 'nodes' | 'modifiedNodeIds' | 'invalidNodeIds' | 'pageLength' | 'pageFragmentLength' | 'stage' | 'stageLoading' | 'disabledMultiSelect' | 'alwaysMultiSelect'} name`
 
 - **返回：**
-
   - `{any} value`
-  
+
 - **详情：**
 
   获取当前指指定name的值
-  
+
   'root': 当前整个配置，也就是当前编辑器的值
 
   'page': 当前正在编辑的页面配置
@@ -28,21 +71,32 @@
 
   'modifiedNodeIds': 当前页面所有改动过的节点id
 
+  'invalidNodeIds': 校验失败的节点错误信息（`Map<Id, NodeInvalidInfo>`），供组件树标红提示与保存拦截读取
+
   'pageLength': 所以页面个数
 
+  'pageFragmentLength': 页面片个数
+
   'stage': [StageCore](../stage/coreMethods.md)实例
+
+  'stageLoading': 画布是否加载中
+
+  'disabledMultiSelect': 是否禁用多选
+
+  'alwaysMultiSelect': 是否始终启用多选模式（无需按住 Ctrl/Meta）
 
 - **示例：**
 
 ```js
-import { editorService } from '@tmagic/editor';
+import { editorService } from "@tmagic/editor";
 
-const node = editorService.get('node');
+const node = editorService.get("node");
 ```
 
 ## set
-  - `{'root' | 'page' | 'parent' | 'node' | 'highlightNode' | 'nodes' | 'modifiedNodeIds' | 'pageLength' | 'stage'} name`
-  - `{any} value`
+
+- `{'root' | 'page' | 'parent' | 'node' | 'highlightNode' | 'nodes' | 'modifiedNodeIds' | 'invalidNodeIds' | 'pageLength' | 'pageFragmentLength' | 'stage' | 'stageLoading' | 'disabledMultiSelect' | 'alwaysMultiSelect'} name`
+- `{any} value`
 
 - **详情：**
   参考[get](#get)方法
@@ -50,23 +104,20 @@ const node = editorService.get('node');
 - **示例：**
 
 ```js
-import { editorService } from '@tmagic/editor';
+import { editorService } from "@tmagic/editor";
 
-const node = editorService.get('node');
+const node = editorService.get("node");
 
-editorService.set('node', {
+editorService.set("node", {
   ...node,
-  name: 'new name'
+  name: "new name",
 });
-
 ```
 
 ## getNodeInfo
 
 - **参数：**
-
   - `{number | string}` id 组件id
-  
   - `{boolean}` raw 是否使用toRaw，默认为true
 
 :::tip
@@ -74,8 +125,19 @@ editorService.set('node', {
 :::
 
 - **返回：**
+  - {`EditorNodeInfo`}
 
-  - {[EditorNodeInfo](https://github.com/Tencent/tmagic-editor/blob/c143a5f7670ae61d80c1a2cfcc780cfb5259849d/packages/editor/src/type.ts#L139-L143)}
+  ::: details 查看 EditorNodeInfo 及关联类型定义
+  <<< @/../packages/editor/src/type.ts#EditorNodeInfo{ts}
+
+  <<< @/../packages/schema/src/index.ts#MNode{ts}
+
+  <<< @/../packages/schema/src/index.ts#MContainer{ts}
+
+  <<< @/../packages/schema/src/index.ts#MPage{ts}
+
+  <<< @/../packages/schema/src/index.ts#MPageFragment{ts}
+  :::
 
 - **详情：**
 
@@ -84,9 +146,9 @@ editorService.set('node', {
 - **示例：**
 
 ```js
-import { editorService } from '@tmagic/editor';
+import { editorService } from "@tmagic/editor";
 
-const info = editorService.getNodeInfo('text_123');
+const info = editorService.getNodeInfo("text_123");
 
 console.log(info.node);
 console.log(info.parent);
@@ -96,14 +158,27 @@ console.log(info.page);
 ## getNodeById
 
 - **参数：**
-
   - `{number | string}` id
-  
   - `{boolean}` raw 是否使用toRaw，默认为true
 
 - **返回：**
+  - {`MNode`} 组件节点配置
 
-  - {[MNode](https://github.com/Tencent/tmagic-editor/blob/c143a5f7670ae61d80c1a2cfcc780cfb5259849d/packages/schema/src/index.ts#L99)} 组件节点配置
+  ::: details 查看 MNode 及关联类型定义
+  <<< @/../packages/schema/src/index.ts#MNode{ts}
+
+  <<< @/../packages/schema/src/index.ts#MComponent{ts}
+
+  <<< @/../packages/schema/src/index.ts#MContainer{ts}
+
+  <<< @/../packages/schema/src/index.ts#MIteratorContainer{ts}
+
+  <<< @/../packages/schema/src/index.ts#MPage{ts}
+
+  <<< @/../packages/schema/src/index.ts#MApp{ts}
+
+  <<< @/../packages/schema/src/index.ts#MPageFragment{ts}
+  :::
 
 - **详情：**
 
@@ -112,9 +187,9 @@ console.log(info.page);
 - **示例：**
 
 ```js
-import { editorService } from '@tmagic/editor';
+import { editorService } from "@tmagic/editor";
 
-const node = editorService.getNodeById('text_123');
+const node = editorService.getNodeById("text_123");
 
 console.log(node);
 ```
@@ -122,14 +197,11 @@ console.log(node);
 ## getParentById
 
 - **参数：**
-
   - `{number | string}` id
-  
   - `{boolean}` raw 是否使用toRaw，默认为true
 
 - **返回：**
-
-  - {[MNode](https://github.com/Tencent/tmagic-editor/blob/c143a5f7670ae61d80c1a2cfcc780cfb5259849d/packages/schema/src/index.ts#L99)} 指点组件的父节点配置
+  - {`MNode`} 指点组件的父节点配置
 
 - **详情：**
 
@@ -138,11 +210,34 @@ console.log(node);
 - **示例：**
 
 ```js
-import { editorService } from '@tmagic/editor';
+import { editorService } from "@tmagic/editor";
 
-const parent = editorService.getParentById('text_123');
+const parent = editorService.getParentById("text_123");
 
 console.log(parent);
+```
+
+## isOnDifferentPage
+
+- **参数：**
+  - {`MNode`} node 节点配置
+
+- **返回：**
+  - `{boolean}` true 表示该节点位于非当前页面（即选中该节点将会引起当前页面切换）
+
+- **详情：**
+
+  判断给定节点是否位于非当前页面，通常用于配合 `doNotSwitchPage` 选项判断 DSL 操作是否会引起页面切换
+
+- **示例：**
+
+```js
+import { editorService } from "@tmagic/editor";
+
+const otherPageNode = editorService.getNodeById("text_456");
+if (editorService.isOnDifferentPage(otherPageNode)) {
+  console.log("该节点在其它页面，操作会触发页面切换");
+}
 ```
 
 ## getLayout
@@ -150,14 +245,15 @@ console.log(parent);
 - **[扩展支持](../../guide/editor-expand#行为扩展)：** 是
 
 - **参数：**
-
-  - {[MNode](https://github.com/Tencent/tmagic-editor/blob/c143a5f7670ae61d80c1a2cfcc780cfb5259849d/packages/schema/src/index.ts#L99)} parent
-  
-  - {[MNode](https://github.com/Tencent/tmagic-editor/blob/c143a5f7670ae61d80c1a2cfcc780cfb5259849d/packages/schema/src/index.ts#L99)} node 可选
+  - {`MNode`} parent
+  - {`MNode`} node 可选
 
 - **返回：**
+  - {Promise<`Layout`>} 当前布局模式
 
-  - {Promise<[Layout](https://github.com/Tencent/tmagic-editor/blob/c143a5f7670ae61d80c1a2cfcc780cfb5259849d/packages/editor/src/type.ts#L297-L302)>} 当前布局模式
+  ::: details 查看 Layout 类型定义
+  <<< @/../packages/editor/src/type.ts#Layout{ts}
+  :::
 
 - **详情：**
 
@@ -172,9 +268,9 @@ console.log(parent);
 - **示例：**
 
 ```js
-import { editorService } from '@tmagic/editor';
+import { editorService } from "@tmagic/editor";
 
-const parent = editorService.getParentById('text_123');
+const parent = editorService.getParentById("text_123");
 editorService.getLayout(parent).then((layout) => {
   console.log(parent);
 });
@@ -185,12 +281,10 @@ editorService.getLayout(parent).then((layout) => {
 - **[扩展支持](../../guide/editor-expand#行为扩展)：** 是
 
 - **参数：**
-
-  - {number | string | [MNode](https://github.com/Tencent/tmagic-editor/blob/c143a5f7670ae61d80c1a2cfcc780cfb5259849d/packages/schema/src/index.ts#L99)} config 需要选中的节点或节点ID
+  - {number | string | `MNode`} config 需要选中的节点或节点ID
 
 - **返回：**
-
-  - {Promise<[MNode](https://github.com/Tencent/tmagic-editor/blob/c143a5f7670ae61d80c1a2cfcc780cfb5259849d/packages/schema/src/index.ts#L99)>} 当前选中的节点配置
+  - {Promise<`MNode`>} 当前选中的节点配置
 
 - **详情：**
 
@@ -203,20 +297,18 @@ editorService.getLayout(parent).then((layout) => {
 - **示例：**
 
 ```js
-import { editorService } from '@tmagic/editor';
+import { editorService } from "@tmagic/editor";
 
-editorService.select('text_123');
-editorService.get('stage')?.select('text_123');
+editorService.select("text_123");
+editorService.get("stage")?.select("text_123");
 ```
 
 ## multiSelect
 
 - **参数：**
-
   - {(number | string)[]} ids 需要选中的节点ID集合
-  
-- **返回：**
 
+- **返回：**
   - `{Promise<void>}`
 
 - **详情：**
@@ -230,22 +322,47 @@ editorService.get('stage')?.select('text_123');
 - **示例：**
 
 ```js
-import { editorService } from '@tmagic/editor';
+import { editorService } from "@tmagic/editor";
 
-editorService.multiSelect(['text_123', 'button_123']);
-editorService.get('stage')?.multiSelect(['text_123', 'button_123']);
+editorService.multiSelect(["text_123", "button_123"]);
+editorService.get("stage")?.multiSelect(["text_123", "button_123"]);
 ```
+
+## selectNextNode
+
+- **返回：**
+  - {Promise<`MNode` | null>} 选中后的节点配置
+
+- **详情：**
+
+  选中当前节点同层级（同一父节点）的下一个节点，已经是最后一个时回到第一个
+
+## selectNextPage
+
+- **返回：**
+  - {Promise<`MNode`>} 选中后的页面配置
+
+- **详情：**
+
+  选中下一页，已经是最后一页时回到第一页
+
+## selectRoot
+
+- **返回：**
+  - `{void}`
+
+- **详情：**
+
+  选中根节点（root），同时清空当前选中的页面、父节点、画布及高亮节点
 
 ## highlight
 
 - **[扩展支持](../../guide/editor-expand#行为扩展)：** 是
 
 - **参数：**
-
-  - {number | string | [MNode](https://github.com/Tencent/tmagic-editor/blob/c143a5f7670ae61d80c1a2cfcc780cfb5259849d/packages/schema/src/index.ts#L99)} config 需要高亮的节点或节点ID
+  - {number | string | `MNode`} config 需要高亮的节点或节点ID
 
 - **返回：**
-
   - `{Promise<void>}`
 
 - **详情：**
@@ -255,9 +372,9 @@ editorService.get('stage')?.multiSelect(['text_123', 'button_123']);
 - **示例：**
 
 ```js
-import { editorService } from '@tmagic/editor';
+import { editorService } from "@tmagic/editor";
 
-editorService.highlight('text_123');
+editorService.highlight("text_123");
 ```
 
 ## doAdd
@@ -265,14 +382,12 @@ editorService.highlight('text_123');
 - **[扩展支持](../../guide/editor-expand#行为扩展)：** 是
 
 - **参数：**
+  - {`MNode`} node 新组件节点
 
-  - {[MNode](https://github.com/Tencent/tmagic-editor/blob/c143a5f7670ae61d80c1a2cfcc780cfb5259849d/packages/schema/src/index.ts#L99)} node 新组件节点
-
-  - {[MContainer](https://github.com/Tencent/tmagic-editor/blob/c143a5f7670ae61d80c1a2cfcc780cfb5259849d/packages/schema/src/index.ts#L54-L59)} parent 指定的容器节点
+  - {`MContainer`} parent 指定的容器节点
 
 - **返回：**
-
-  - {Promise<[MNode](https://github.com/Tencent/tmagic-editor/blob/c143a5f7670ae61d80c1a2cfcc780cfb5259849d/packages/schema/src/index.ts#L99)>} 新增的组件
+  - {Promise<`MNode`>} 新增的组件
 
 - **详情：**
 
@@ -283,14 +398,19 @@ editorService.highlight('text_123');
 - **[扩展支持](../../guide/editor-expand#行为扩展)：** 是
 
 - **参数：**
+  - {`MNode` | `MNode`[]} node 新组件节点配置或多个节点集合
 
-  - {[MNode](https://github.com/Tencent/tmagic-editor/blob/c143a5f7670ae61d80c1a2cfcc780cfb5259849d/packages/schema/src/index.ts#L99) | [MNode](https://github.com/Tencent/tmagic-editor/blob/c143a5f7670ae61d80c1a2cfcc780cfb5259849d/packages/schema/src/index.ts#L99)[]} node 新组件节点配置或多个节点集合
+  - {`MContainer`} parent 指定的容器组件节点配置，如果不设置，默认为当前选中的组件的父节点
 
-  - {[MContainer](https://github.com/Tencent/tmagic-editor/blob/c143a5f7670ae61d80c1a2cfcc780cfb5259849d/packages/schema/src/index.ts#L54-L59)} parent 指定的容器组件节点配置，如果不设置，默认为当前选中的组件的父节点
+  - `{Object}` options 可选配置
+    - `{boolean}` doNotSelect 添加后是否不更新当前选中节点（默认 false，添加后会选中新增的节点）
+    - `{boolean}` doNotSwitchPage 添加后是否不切换当前页面（默认 false；新增页面 / 跨页新增时为 true 会跳过会引发页面切换的选中操作）
+    - `{boolean}` doNotPushHistory 是否不写入历史记录（默认 false）
+    - `{string}` historyDescription 见[历史记录相关 options](#历史记录相关-options)
+    - `{HistoryOpSource}` historySource 见[历史记录相关 options](#历史记录相关-options)
 
 - **返回：**
-
-  - {Promise<[MNode](https://github.com/Tencent/tmagic-editor/blob/c143a5f7670ae61d80c1a2cfcc780cfb5259849d/packages/schema/src/index.ts#L99) | [MNode](https://github.com/Tencent/tmagic-editor/blob/c143a5f7670ae61d80c1a2cfcc780cfb5259849d/packages/schema/src/index.ts#L99)[]>} 新增的组件或组件集合
+  - {Promise<`MNode` | `MNode`[]>} 新增的组件或组件集合
 
 - **详情：**
 
@@ -307,30 +427,37 @@ editorService.highlight('text_123');
 ## doRemove
 
 - **[扩展支持](../../guide/editor-expand#行为扩展)：** 是
-  
 - **参数：**
-
-  - {[MNode](https://github.com/Tencent/tmagic-editor/blob/c143a5f7670ae61d80c1a2cfcc780cfb5259849d/packages/schema/src/index.ts#L99)} node 要删除的节点
+  - {`MNode`} node 要删除的节点
+  - `{Object}` options 可选配置
+    - `{boolean}` doNotSelect 删除后是否不更新当前选中节点（默认 false）
+    - `{boolean}` doNotSwitchPage 删除后是否不切换当前页面（默认 false；删除页面 / 页面片段时为 true 会跳过自动切换到首个剩余页面）
 
 - **返回：**
-
   - `{Promise<void>}`
 
 - **详情：**
 
   删除指定的组件或者页面
 
+  :::tip
+  无论是否传入 `doNotSelect` / `doNotSwitchPage`，当被删除节点在当前选中列表中时，state 都会自动移除该节点的引用；当被删除的正好是当前页面时，state.page 也会同步清空，避免持有已删除节点
+  :::
 
 ## remove
 
 - **[扩展支持](../../guide/editor-expand#行为扩展)：** 是
 
 - **参数：**
+  - {`MNode` | `MNode`[])} node 要删除的节点或节点集合
+  - `{Object}` options 可选配置
+    - `{boolean}` doNotSelect 删除后是否不更新当前选中节点（默认 false，删除后会选中父节点或首个页面）
+    - `{boolean}` doNotSwitchPage 删除后是否不切换当前页面（默认 false；删除页面 / 页面片段时为 true 会跳过自动切换到首个剩余页面）
+    - `{boolean}` doNotPushHistory 是否不写入历史记录（默认 false）
+    - `{string}` historyDescription 见[历史记录相关 options](#历史记录相关-options)
+    - `{HistoryOpSource}` historySource 见[历史记录相关 options](#历史记录相关-options)
 
-  - {[MNode](https://github.com/Tencent/tmagic-editor/blob/c143a5f7670ae61d80c1a2cfcc780cfb5259849d/packages/schema/src/index.ts#L99) | [MNode](https://github.com/Tencent/tmagic-editor/blob/c143a5f7670ae61d80c1a2cfcc780cfb5259849d/packages/schema/src/index.ts#L99)[])} node 要删除的节点或节点集合
-  
 - **返回：**
-
   - `{Promise<void>}`
 
 - **详情：**
@@ -350,12 +477,18 @@ editorService.highlight('text_123');
 - **[扩展支持](../../guide/editor-expand#行为扩展)：** 是
 
 - **参数：**
-
- - {[MNode](https://github.com/Tencent/tmagic-editor/blob/c143a5f7670ae61d80c1a2cfcc780cfb5259849d/packages/schema/src/index.ts#L99) | [MNode](https://github.com/Tencent/tmagic-editor/blob/c143a5f7670ae61d80c1a2cfcc780cfb5259849d/packages/schema/src/index.ts#L99))} node 新的节点
+  - {`MNode`} config 新的节点
+  - `{Object}` data 可选配置
+    - {`ChangeRecord`[]} changeRecords 变更记录
+    - `{boolean}` replace 是否整节点替换（默认 false）。为 `true` 时跳过 `mergeWith` / `toggleFixedPosition` / `setChildrenLayout`，直接用传入配置覆盖现有节点
+    - `{HistoryOpSource}` historySource 见[历史记录相关 options](#历史记录相关-options)
 
 - **返回：**
+  - `{Promise<{ newNode: MNode; oldNode: MNode; changeRecords?: ChangeRecord[] }>}` 更新前后的节点信息
 
-  - {Promise<[MNode](https://github.com/Tencent/tmagic-editor/blob/c143a5f7670ae61d80c1a2cfcc780cfb5259849d/packages/schema/src/index.ts#L99) | [MNode](https://github.com/Tencent/tmagic-editor/blob/c143a5f7670ae61d80c1a2cfcc780cfb5259849d/packages/schema/src/index.ts#L99)>} 新的节点
+  ::: details 查看 ChangeRecord 类型定义
+  <<< @/../packages/form-schema/src/base.ts#ChangeRecord{ts}
+  :::
 
 - **详情：**
 
@@ -363,6 +496,12 @@ editorService.highlight('text_123');
 
   :::tip
   节点中应该要有id，不然不知道要更新哪个节点
+
+  当被更新节点正好在当前选中列表中时，state 会自动同步到新的节点引用，无需调用方处理
+
+  当被更新节点正好是当前页面时，state.page 也会同步到新的节点引用；更新非当前页面（不同 ID）时不会把编辑器切到该页
+
+  默认会将传入配置与现有节点深合并（保留未传入的字段）。若需要完整 DSL 覆盖（如源码编辑写回），传入 `replace: true`。
   :::
 
 ## update
@@ -370,13 +509,25 @@ editorService.highlight('text_123');
 - **[扩展支持](../../guide/editor-expand#行为扩展)：** 是
 
 - **参数：**
+  - {`MNode` | `MNode`[]} config 新的节点或节点集合
+  - `{Object}` data 可选配置
+    - {`ChangeRecord`[]} changeRecords 单节点 form 端变更记录（多节点场景下被忽略，使用 `changeRecordList`）
+    - {`ChangeRecord`[][]} changeRecordList 多节点 form 端变更记录列表，按 `config` 数组同序对应每个节点；优先级高于 `changeRecords`
+    - `{boolean}` doNotPushHistory 是否不写入历史记录（默认 false）
+    - `{string}` historyDescription 见[历史记录相关 options](#历史记录相关-options)
+    - `{HistoryOpSource}` historySource 见[历史记录相关 options](#历史记录相关-options)
+    - `{boolean}` replace 是否整节点替换（默认 false）。为 `true` 时跳过 `mergeWith` / `toggleFixedPosition` / `setChildrenLayout`，直接用传入配置覆盖现有节点；适用于源码编辑、完整 DSL 回写等场景
+    - `{Object}` invalidInfo 启用 [enablePropsFormValidate](./props.md#enablepropsformvalidate) 时，属性面板提交携带的校验错误信息，在写入历史记录之前落库，使历史快照与本次变更对齐
+      - `{Id}` id 节点 id
+      - `{'props' | 'style'}` source 错误来源：属性表单 / 样式表单
+      - `{string}` error 错误文案（可为含 `<br>` 的 HTML）；为空时表示清除该来源的错误记录
 
-  - {Promise<[MNode](https://github.com/Tencent/tmagic-editor/blob/c143a5f7670ae61d80c1a2cfcc780cfb5259849d/packages/schema/src/index.ts#L99) | [MNode](https://github.com/Tencent/tmagic-editor/blob/c143a5f7670ae61d80c1a2cfcc780cfb5259849d/packages/schema/src/index.ts#L99)[]>} node 新的节点或节点集合
-
+  ::: details 查看 ChangeRecord 类型定义
+  <<< @/../packages/form-schema/src/base.ts#ChangeRecord{ts}
+  :::
 
 - **返回：**
-
-  - {Promise<[MNode](https://github.com/Tencent/tmagic-editor/blob/c143a5f7670ae61d80c1a2cfcc780cfb5259849d/packages/schema/src/index.ts#L99) | [MNode](https://github.com/Tencent/tmagic-editor/blob/c143a5f7670ae61d80c1a2cfcc780cfb5259849d/packages/schema/src/index.ts#L99)[]>} 新的节点或节点集合
+  - {Promise<`MNode` | `MNode`[]>} 新的节点或节点集合
 
 - **详情：**
 
@@ -390,17 +541,36 @@ editorService.highlight('text_123');
   编辑器内部更新组件都是调用update来实现的，update除了更新操作外，还会记录历史堆，还会更新[代码块](../../guide/advanced/code-block.md)关系链。
   :::
 
+  :::tip
+  **多节点场景必须使用 `changeRecordList`**：每个节点应保留自己独立的 records，不能把多个节点的
+  records 合并到同一个 `changeRecords` 数组里，否则 `doUpdate` / 依赖收集 / 历史回放都会按错误的
+  `propPath` 处理。
+
+  写入历史时，每个节点的 records 会单独保存到 `updatedItems[i].changeRecords`；撤销/重做时若有
+  records，则仅按 `propPath` 局部更新对应字段，避免整节点替换冲掉同节点上的其它无关变更；缺省
+  才退化为整节点替换（如内部 `sort` / `moveLayer` / 拖动等纯快照场景）。
+  :::
+
+  :::tip
+  **`replace: true` 整节点替换：** 默认 `update` 会将传入配置与现有节点深合并，未传入的字段会保留。
+  传入 `replace: true` 后跳过合并与布局相关变换，直接用传入配置覆盖，传入对象中不存在的字段会被删除。
+  属性面板局部改动请保持默认；源码编辑 / 完整 DSL 回写等场景使用 `replace: true`。
+  :::
+
 ## sort
 
 - **[扩展支持](../../guide/editor-expand#行为扩展)：** 是
 
 - **参数：**
-
   - `{ string | number }` id1
   - `{ string | number }` id2
+  - `{Object}` options 可选配置
+    - `{boolean}` doNotSelect 排序后是否不更新当前选中节点（默认 false）
+    - `{boolean}` doNotSwitchPage 排序后是否不切换当前页面（排序只发生在同一父节点内，方法内为空操作；保留以与其它 DSL 操作 API 一致）
+    - `{boolean}` doNotPushHistory 是否不写入历史记录（默认 false）
+    - `{HistoryOpSource}` historySource 见[历史记录相关 options](#历史记录相关-options)
 
 - **返回：**
-
   - `{Promise<void>}`
 
 - **详情：**
@@ -414,29 +584,37 @@ editorService.highlight('text_123');
 - **[扩展支持](../../guide/editor-expand#行为扩展)：** 是
 
 - **参数：**
-
-  - {Promise<[MNode](https://github.com/Tencent/tmagic-editor/blob/c143a5f7670ae61d80c1a2cfcc780cfb5259849d/packages/schema/src/index.ts#L99) | [MNode](https://github.com/Tencent/tmagic-editor/blob/c143a5f7670ae61d80c1a2cfcc780cfb5259849d/packages/schema/src/index.ts#L99)[]>} node 需要复制的节点或节点集合
+  - {`MNode` | `MNode`[]} config 需要复制的节点或节点集合
 
 - **返回：**
-
-  - `{Promise<void>}`
+  - `{void}`
 
 - **详情：**
-  
+
 复制组件节点或节点集合
 
-通过[storageService.setItem](./storageServiceMethods.md#setitem),将组将节点配置转化成string，然后存储到localStorage中
+通过[storageService.setItem](./storageServiceMethods.md#setitem),将组件节点配置存储到localStorage中
+
+## copyWithRelated
+
+- **参数：**
+  - {`MNode` | `MNode`[]} config 需要复制的节点或节点集合
+  - `{TargetOptions}` collectorOptions 可选的依赖收集器配置
+
+- **返回：**
+  - `{void}`
+
+- **详情：**
+
+  复制节点时会同时收集组件关联的依赖（如 dataSource、codeBlock 等），并一起存储到 localStorage 中，便于粘贴时一起带入
 
 ## doPaste
 
 - **[扩展支持](../../guide/editor-expand#行为扩展)：** 是
 
-- **参数：**
-
-  - 
+- ## **参数：**
 
 - **返回：**
-
   - `{Promise<void>}`
 
 - **详情：**
@@ -448,31 +626,38 @@ editorService.highlight('text_123');
 - **[扩展支持](../../guide/editor-expand#行为扩展)：** 是
 
 - **参数：**
+  - {`PastePosition`} position 粘贴的坐标
 
-  - {[PastePosition](https://github.com/Tencent/tmagic-editor/blob/239b5d3efeae916a8cf3e3566d88063ecccc0553/packages/editor/src/type.ts#L152-L163)} position 粘贴的坐标
+  ::: details 查看 PastePosition 类型定义
+  <<< @/../packages/editor/src/type.ts#PastePosition{ts}
+  :::
+
+  - `{TargetOptions}` collectorOptions 可选的依赖收集器配置
+  - `{Object}` options 可选配置
+    - `{boolean}` doNotSelect 粘贴后是否不更新当前选中节点（默认 false）
+    - `{boolean}` doNotSwitchPage 粘贴后是否不切换当前页面（默认 false；跨页粘贴时为 true 会跳过页面切换）
+    - `{boolean}` doNotPushHistory 是否不写入历史记录（默认 false）
+    - `{string}` historyDescription 见[历史记录相关 options](#历史记录相关-options)
+    - `{HistoryOpSource}` historySource 见[历史记录相关 options](#历史记录相关-options)
 
 - **返回：**
-
-  - {Promise<[MNode](https://github.com/Tencent/tmagic-editor/blob/c143a5f7670ae61d80c1a2cfcc780cfb5259849d/packages/schema/src/index.ts#L99) | [MNode](https://github.com/Tencent/tmagic-editor/blob/c143a5f7670ae61d80c1a2cfcc780cfb5259849d/packages/schema/src/index.ts#L99)[]>}  添加后的组件节点配置
+  - {Promise<`MNode` | `MNode`[]>} 添加后的组件节点配置
 
 - **详情：**
 
 粘贴组件节点或节点集合
 
-通过[storageService.getItem](./storageServiceMethods.md#setitem),从localStorage中获取节点，然后添加到当前容器中
-
+通过[storageService.getItem](./storageServiceMethods.md#getItem),从localStorage中获取节点，然后添加到当前容器中
 
 ## doAlignCenter
 
 - **[扩展支持](../../guide/editor-expand#行为扩展)：** 是
 
 - **参数：**
-
-  - {[MNode](https://github.com/Tencent/tmagic-editor/blob/c143a5f7670ae61d80c1a2cfcc780cfb5259849d/packages/schema/src/index.ts#L99)} config 需要居中的组件
+  - {`MNode`} config 需要居中的组件
 
 - **返回：**
-
-  - {Promise<[MNode](https://github.com/Tencent/tmagic-editor/blob/c143a5f7670ae61d80c1a2cfcc780cfb5259849d/packages/schema/src/index.ts#L99)>}
+  - {Promise<`MNode`>}
 
 - **详情：**
 
@@ -487,13 +672,16 @@ editorService.highlight('text_123');
 - **[扩展支持](../../guide/editor-expand#行为扩展)：** 是
 
 - **参数：**
-
-  - {Promise<[MNode](https://github.com/Tencent/tmagic-editor/blob/c143a5f7670ae61d80c1a2cfcc780cfb5259849d/packages/schema/src/index.ts#L99) | [MNode](https://github.com/Tencent/tmagic-editor/blob/c143a5f7670ae61d80c1a2cfcc780cfb5259849d/packages/schema/src/index.ts#L99)[]>} config 需要居中的组件或者组件集合
+  - {`MNode` | `MNode`[]} config 需要居中的组件或者组件集合
+  - `{Object}` options 可选配置
+    - `{boolean}` doNotSelect 居中后是否不更新当前选中节点（默认 false）
+    - `{boolean}` doNotSwitchPage 居中后是否不切换当前页面（居中只更新节点 style，方法内为空操作；保留以与其它 DSL 操作 API 一致）
+    - `{boolean}` doNotPushHistory 是否不写入历史记录（默认 false）
+    - `{string}` historyDescription 见[历史记录相关 options](#历史记录相关-options)
+    - `{HistoryOpSource}` historySource 见[历史记录相关 options](#历史记录相关-options)
 
 - **返回：**
-
-  - {Promise<[MNode](https://github.com/Tencent/tmagic-editor/blob/c143a5f7670ae61d80c1a2cfcc780cfb5259849d/packages/schema/src/index.ts#L99) | [MNode](https://github.com/Tencent/tmagic-editor/blob/c143a5f7670ae61d80c1a2cfcc780cfb5259849d/packages/schema/src/index.ts#L99)[]>}
-
+  - {Promise<`MNode` | `MNode`[]>}
 
 - **详情：**
 
@@ -504,16 +692,19 @@ editorService.highlight('text_123');
 
 alignCenter可以支持一次水平居中多个组件，alignCenter是通过调用[doAlignCenter](#doaligncentere)来获取到已设置好水平居中的位置信息的节点，然后调用update更新。
 :::
+
 ## moveLayer
 
 - **[扩展支持](../../guide/editor-expand#行为扩展)：** 是
 
 - **参数：**
-
   - `{number | 'top' | 'bottom'}` offset
+  - `{Object}` options 可选配置
+    - `{boolean}` doNotPushHistory 是否不写入历史记录（默认 false）
+    - `{string}` historyDescription 见[历史记录相关 options](#历史记录相关-options)
+    - `{HistoryOpSource}` historySource 见[历史记录相关 options](#历史记录相关-options)
 
 - **返回：**
-
   - `{Promise<void>}`
 
 - **详情：**
@@ -522,31 +713,182 @@ alignCenter可以支持一次水平居中多个组件，alignCenter是通过调�
 
   用于实现上移一层、下移一层、置顶、置底
 
-
 ## moveToContainer
 
 - **[扩展支持](../../guide/editor-expand#行为扩展)：** 是
 
 - **参数：**
-
-  - {[MNode](https://github.com/Tencent/tmagic-editor/blob/c143a5f7670ae61d80c1a2cfcc780cfb5259849d/packages/schema/src/index.ts#L99)} config 需要移动的节点
+  - {`MNode`} config 需要移动的节点
   - `{string | number}` targetId 容器ID
+  - `{Object}` options 可选配置
+    - `{boolean}` doNotSelect 移动后是否不更新当前选中节点（默认 false）
+    - `{boolean}` doNotSwitchPage 移动后是否不切换当前页面（默认 false；目标容器位于其它页面时为 true 会跳过自动选中以避免页面切换）
+    - `{boolean}` doNotPushHistory 是否不写入历史记录（默认 false）
+    - `{string}` historyDescription 见[历史记录相关 options](#历史记录相关-options)
+    - `{HistoryOpSource}` historySource 见[历史记录相关 options](#历史记录相关-options)
 
 - **返回：**
-
-  - Promise<[MNode](https://github.com/Tencent/tmagic-editor/blob/c143a5f7670ae61d80c1a2cfcc780cfb5259849d/packages/schema/src/index.ts#L99) | undefined>
+  - Promise<`MNode` | undefined>
 
 - **详情：**
 
   移动到指定容器中
+
+## dragTo
+
+- **参数：**
+  - {`MNode` | `MNode`[]} config 需要拖拽的节点或节点集合
+  - {`MContainer`} targetParent 目标父容器
+  - `{number}` targetIndex 目标位置索引
+  - `{Object}` options 可选配置
+    - `{boolean}` doNotPushHistory 是否不写入历史记录（默认 false）
+    - `{string}` historyDescription 见[历史记录相关 options](#历史记录相关-options)
+    - `{HistoryOpSource}` historySource 见[历史记录相关 options](#历史记录相关-options)
+
+- **返回：**
+  - `{Promise<void>}`
+
+- **详情：**
+
+  将节点（支持多选）拖拽到目标容器的指定位置，会自动处理跨容器布局切换并记录历史
+
+## addAndGetHistoryId
+
+- **参数：** 同 [add](#add)
+
+- **返回：**
+  - {Promise<[`DslOpWithHistoryIdsResult<MNode | MNode[]>`](#历史记录-uuid-与-andgethistoryid)>}
+    - `result`：同 [add](#add) 的返回值（新增节点 / 节点数组）
+    - `historyIds`：本次写入历史记录的 [uuid](#历史记录-uuid-与-andgethistoryid) 列表；未写入历史时为 `[]`
+
+- **详情：**
+
+  与 [add](#add) 行为完全一致，并在返回值中额外提供 `historyIds`，见[历史记录 uuid 与 \*AndGetHistoryId](#历史记录-uuid-与-andgethistoryid)
+
+- **示例：**
+
+```js
+import { editorService } from "@tmagic/editor";
+
+const { result, historyIds } = await editorService.addAndGetHistoryId(
+  { type: "text", text: "hello" },
+  parent,
+  { historySource: "api" },
+);
+console.log(result); // 新增节点
+console.log(historyIds); // 本次新增对应的历史记录 uuid 列表，或 []
+```
+
+## removeAndGetHistoryId
+
+- **参数：** 同 [remove](#remove)
+
+- **返回：**
+  - {Promise<[`DslOpWithHistoryIdsResult<void>`](#历史记录-uuid-与-andgethistoryid)>}
+    - `historyIds`：本次写入历史记录的 [uuid](#历史记录-uuid-与-andgethistoryid) 列表；未写入历史时为 `[]`
+
+- **详情：**
+
+  与 [remove](#remove) 行为完全一致，并在返回值中额外提供 `historyIds`
+
+## updateAndGetHistoryId
+
+- **参数：** 同 [update](#update)
+
+- **返回：**
+  - {Promise<[`DslOpWithHistoryIdsResult<MNode | MNode[]>`](#历史记录-uuid-与-andgethistoryid)>}
+    - `result`：同 [update](#update) 的返回值（更新后的节点 / 节点数组）
+    - `historyIds`：本次写入历史记录的 [uuid](#历史记录-uuid-与-andgethistoryid) 列表；未写入历史时为 `[]`
+
+- **详情：**
+
+  与 [update](#update) 行为完全一致，并在返回值中额外提供 `historyIds`
+
+## moveLayerAndGetHistoryId
+
+- **参数：** 同 [moveLayer](#movelayer)
+
+- **返回：**
+  - {Promise<[`DslOpWithHistoryIdsResult<void>`](#历史记录-uuid-与-andgethistoryid)>}
+    - `historyIds`：本次写入历史记录的 [uuid](#历史记录-uuid-与-andgethistoryid) 列表；未写入历史时为 `[]`
+
+- **详情：**
+
+  与 [moveLayer](#movelayer) 行为完全一致，并在返回值中额外提供 `historyIds`
+
+## moveToContainerAndGetHistoryId
+
+- **参数：** 同 [moveToContainer](#movetocontainer)
+
+- **返回：**
+  - {Promise<[`DslOpWithHistoryIdsResult<MNode | MNode[]>`](#历史记录-uuid-与-andgethistoryid)>}
+    - `result`：同 [moveToContainer](#movetocontainer) 的返回值（移动后的节点 / 节点数组）
+    - `historyIds`：本次写入历史记录的 [uuid](#历史记录-uuid-与-andgethistoryid) 列表；未写入历史时为 `[]`
+
+- **详情：**
+
+  与 [moveToContainer](#movetocontainer) 行为完全一致，并在返回值中额外提供 `historyIds`
+
+## dragToAndGetHistoryId
+
+- **参数：** 同 [dragTo](#dragto)
+
+- **返回：**
+  - {Promise<[`DslOpWithHistoryIdsResult<void>`](#历史记录-uuid-与-andgethistoryid)>}
+    - `historyIds`：本次写入历史记录的 [uuid](#历史记录-uuid-与-andgethistoryid) 列表；未写入历史时为 `[]`
+
+- **详情：**
+
+  与 [dragTo](#dragto) 行为完全一致，并在返回值中额外提供 `historyIds`
+
+## revertPageStepById
+
+- **参数：**
+  - `{string[]}` uuids 目标历史记录的 uuid 列表（通常由 `*AndGetHistoryId` 方法返回的 `historyIds`）
+
+- **返回：**
+  - {Promise<(`StepValue` | null)[]>} 与入参同序的回滚结果列表，某项失败时为 `null`
+
+- **详情：**
+
+  通过历史记录 uuid「回滚」当前页面的历史步骤（类 git revert 语义）：不移动游标、不丢弃任何步骤，而是把目标 step 的修改**反向应用为一条全新的步骤**压入栈顶。**按数组顺序依次回滚**。
+
+  ::: tip
+  `opType: 'update'` 的步骤必须携带 `changeRecords` 才支持回滚（否则只能整节点替换，会冲掉后续无关变更）；未应用（已被撤销）的步骤无法回滚。
+  :::
+
+- **示例：**
+
+```js
+import { editorService } from "@tmagic/editor";
+
+// 执行操作时拿到本次历史记录 uuid
+const { historyIds } = await editorService.addAndGetHistoryId({ type: "text", text: "hello" });
+
+// 之后任意时机按 uuid 回滚（支持单个或整批 historyIds）
+await editorService.revertPageStepById(historyIds);
+```
 
 ## undo
 
 - **[扩展支持](../../guide/editor-expand#行为扩展)：** 是
 
 - **返回：**
+  - {Promise<`StepValue` | null>}
 
-  - {Promise<[StepValue](https://github.com/Tencent/tmagic-editor/blob/239b5d3efeae916a8cf3e3566d88063ecccc0553/packages/editor/src/type.ts#L400-L404) | null>}
+  ::: details 查看 StepValue 及关联类型定义
+  <<< @/../packages/editor/src/type.ts#StepValue{ts}
+
+  <<< @/../packages/editor/src/type.ts#BaseStepValue{ts}
+
+  <<< @/../packages/editor/src/type.ts#StepExtra{ts}
+
+  <<< @/../packages/editor/src/type.ts#HistoryOpType{ts}
+
+  <<< @/../packages/editor/src/type.ts#HistoryOpSource{ts}
+
+  <<< @/../packages/schema/src/index.ts#Id{ts}
+  :::
 
 - **详情：**
 
@@ -557,8 +899,21 @@ alignCenter可以支持一次水平居中多个组件，alignCenter是通过调�
 - **[扩展支持](../../guide/editor-expand#行为扩展)：** 是
 
 - **返回：**
+  - {Promise<`StepValue` | null>}
 
-  - {Promise<[StepValue](https://github.com/Tencent/tmagic-editor/blob/239b5d3efeae916a8cf3e3566d88063ecccc0553/packages/editor/src/type.ts#L400-L404) | null>}
+  ::: details 查看 StepValue 及关联类型定义
+  <<< @/../packages/editor/src/type.ts#StepValue{ts}
+
+  <<< @/../packages/editor/src/type.ts#BaseStepValue{ts}
+
+  <<< @/../packages/editor/src/type.ts#StepExtra{ts}
+
+  <<< @/../packages/editor/src/type.ts#HistoryOpType{ts}
+
+  <<< @/../packages/editor/src/type.ts#HistoryOpSource{ts}
+
+  <<< @/../packages/schema/src/index.ts#Id{ts}
+  :::
 
 - **详情：**
 
@@ -569,12 +924,14 @@ alignCenter可以支持一次水平居中多个组件，alignCenter是通过调�
 - **[扩展支持](../../guide/editor-expand#行为扩展)：** 是
 
 - **参数：**
-
   - `{number}` left
   - `{number}` top
+  - `{Object}` options 可选配置
+    - `{boolean}` doNotPushHistory 是否不写入历史记录（默认 false）
+    - `{string}` historyDescription 见[历史记录相关 options](#历史记录相关-options)
+    - `{HistoryOpSource}` historySource 见[历史记录相关 options](#历史记录相关-options)
 
 - **返回：**
-
   - `{Promise<void>}`
 
 - **详情：**
@@ -586,6 +943,89 @@ alignCenter可以支持一次水平居中多个组件，alignCenter是通过调�
 - **详情：**
 
 重置当前记录的修改过的节点id记录，通常用于保存之后
+
+## setInvalidNode
+
+- **参数：**
+  - `{Id}` id 节点 id
+  - `{'props' | 'style'}` source 错误来源：属性表单（`props`）/ 样式表单（`style`）
+  - `{string}` message 错误文案（可能为包含 `<br>` 的 HTML）
+
+- **详情：**
+
+  记录（或覆盖）某个节点在指定来源上的校验错误信息，写入 `invalidNodeIds` 状态并发出 [invalid-node-change](#invalid-node-change) 事件。
+
+  属性表单与样式表单是两个独立的 `FormPanel` 且均指向同一节点，故以来源为键分别保存，避免某个面板校验通过时误清另一个面板记录的错误。节点视为存在错误当且仅当任一来源存在非空文本。
+
+- **示例：**
+
+```js
+import { editorService } from "@tmagic/editor";
+
+// 标记 text_123 的属性表单校验错误
+editorService.setInvalidNode("text_123", "props", "标题不能为空");
+```
+
+## deleteInvalidNode
+
+- **参数：**
+  - `{Id}` id 节点 id
+  - `{'props' | 'style'}` source 可选；指定来源则仅删除该来源错误，不传则删除该节点全部来源的错误
+
+- **详情：**
+
+  删除节点的校验错误记录。仅当该来源被清空且另一来源也无错误时，节点整体错误记录才会被移除；随后发出 [invalid-node-change](#invalid-node-change) 事件。
+
+## getInvalidNodeIds
+
+- **返回：**
+  - {`Map<Id, NodeInvalidInfo>`} 当前存在校验错误的节点错误 Map（key 为节点 id）
+
+- **详情：**
+
+  获取当前存在校验错误的节点错误 Map，供组件树标红提示与保存拦截读取。
+
+  ::: details 查看 NodeInvalidInfo 及关联类型定义
+  <<< @/../packages/editor/src/type.ts#NodeInvalidInfo{ts}
+
+  <<< @/../packages/editor/src/type.ts#NodeInvalidSource{ts}
+
+  <<< @/../packages/schema/src/index.ts#Id{ts}
+  :::
+
+- **示例：**
+
+```js
+import { editorService } from "@tmagic/editor";
+
+// 保存前检查是否存在校验错误的组件
+const invalidNodeIds = editorService.getInvalidNodeIds();
+if (invalidNodeIds.size > 0) {
+  const names = [...invalidNodeIds.keys()].map((id) => {
+    const node = editorService.getNodeById(id);
+    return node?.name ? `${node.name}(${id})` : `${id}`;
+  });
+  console.warn(`以下组件存在配置校验错误，请修复后再保存：${names.join("、")}`);
+}
+```
+
+## getInvalidNodeInfo
+
+- **参数：**
+  - `{Id}` id 节点 id
+
+- **返回：**
+  - {`NodeInvalidInfo` | undefined} 指定节点的校验错误信息（含 `props` / `style` 来源的错误文案）
+
+- **详情：**
+
+  获取指定节点的校验错误信息。
+
+## resetInvalidNodeId
+
+- **详情：**
+
+  清空全部校验错误记录（即 `invalidNodeIds` 状态），随后发出 [invalid-node-change](#invalid-node-change) 事件。
 
 ## resetState
 
@@ -601,52 +1041,18 @@ alignCenter可以支持一次水平居中多个组件，alignCenter是通过调�
 
   移除所有事件监听，清空state，移除所有插件
 
-## use
-
-使用中间件的方式扩展方法，上述方法中标记有`扩展支持： 是`的方法都支持使用use扩展
-
-- **示例：**
-
-```js
-import { editorService, getAddParent } from '@tmagic/editor';
-import { ElMessageBox } from 'element-plus';
-
-editorService.use({
-  // 添加是否删除节点确认提示
-  async remove(node, next) {
-    await ElMessageBox.confirm('是否删除', '提示', {
-      confirmButtonText: '确定',
-      cancelButtonText: '取消',
-      type: 'warning',
-    });
-
-    next();
-  },
-
-  add(node, next) {
-    // text组件只能添加到container中
-    const parentNode = getAddParent(node);
-    if (node.type === 'text' && parentNode?.type !== 'container') {
-      return;
-    }
-
-    next();
-  },
-});
-```
-
 ## usePlugin
 
 - **详情：**
 
-相对于[use](#use), usePlugin支持更加灵活更加细致的扩展， 上述方法中标记有`扩展支持： 是`的方法都支持使用usePlugin扩展
+  usePlugin支持灵活细致的扩展， 上述方法中标记有`扩展支持： 是`的方法都支持使用usePlugin扩展
 
 每个支持扩展的方法都支持定制before、after两个hook来干预原有方法的行为，before可以用于修改传入参数，after可以用于修改返回的值
 
 - **示例：**
 
 ```js
-import { editorService } from '@tmagic/editor';
+import { editorService } from "@tmagic/editor";
 
 editorService.usePlugin({
   // 添加组件的时候设置一个添加时间
@@ -663,3 +1069,4 @@ editorService.usePlugin({
 - **详情：**
 
 删掉当前设置的所有扩展
+

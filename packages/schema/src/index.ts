@@ -1,7 +1,7 @@
 /*
  * Tencent is pleased to support the open source community by making TMagicEditor available.
  *
- * Copyright (C) 2023 THL A29 Limited, a Tencent company.  All rights reserved.
+ * Copyright (C) 2025 Tencent.  All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -33,20 +33,11 @@ export interface HttpOptions {
 
 export type RequestFunction = <T = any>(options: HttpOptions) => Promise<T>;
 
+// #region JsEngine
 export type JsEngine = 'browser' | 'hippy' | 'nodejs';
+// #endregion JsEngine
 
-export interface AppCore {
-  /** 页面配置描述 */
-  dsl?: MApp;
-  /** 允许平台，editor: 编辑器中，mobile: 手机端，tv: 电视端, pc: 电脑端 */
-  platform?: 'editor' | 'mobile' | 'tv' | 'pc' | string;
-  /** 代码运行环境 */
-  jsEngine?: JsEngine | string;
-  /** 网络请求函数 */
-  request?: RequestFunction;
-  [key: string]: any;
-}
-
+// #region NodeType
 export enum NodeType {
   /** 容器 */
   CONTAINER = 'container',
@@ -57,9 +48,19 @@ export enum NodeType {
   /** 页面片 */
   PAGE_FRAGMENT = 'page-fragment',
 }
+// #endregion NodeType
 
+export const NODE_CONDS_KEY = 'displayConds';
+export const NODE_CONDS_RESULT_KEY = 'displayCondsResultReverse';
+
+export const NODE_DISABLE_DATA_SOURCE_KEY = '_tmagic_node_disabled_data_source';
+export const NODE_DISABLE_CODE_BLOCK_KEY = '_tmagic_node_disabled_code_block';
+
+// #region Id
 export type Id = string | number;
+// #endregion Id
 
+// #region ActionType
 // 事件联动的动作类型
 export enum ActionType {
   /** 联动组件 */
@@ -69,10 +70,13 @@ export enum ActionType {
   /** 数据源 */
   DATA_SOURCE = 'data-source',
 }
+// #endregion ActionType
 
+// #region DataSourceDeps
 export interface DataSourceDeps {
   [dataSourceId: string | number]: DepData;
 }
+// #endregion DataSourceDeps
 
 /** 事件类型(已废弃，后续不建议继续使用) */
 export interface DeprecatedEventConfig {
@@ -84,22 +88,27 @@ export interface DeprecatedEventConfig {
   method: string;
 }
 
+// #region EventConfig
 export interface EventConfig {
   /** 待触发的事件名称 */
   name: string;
   /** 动作响应配置 */
   actions: EventActionItem[];
 }
+// #endregion EventConfig
 
+// #region CodeItemConfig
 export interface CodeItemConfig {
   /** 动作类型 */
   actionType: ActionType;
   /** 代码ID */
   codeId: Id;
   /** 代码参数 */
-  params?: object;
+  params?: Record<string, any>;
 }
+// #endregion CodeItemConfig
 
+// #region CompItemConfig
 export interface CompItemConfig {
   /** 动作类型 */
   actionType: ActionType;
@@ -108,7 +117,9 @@ export interface CompItemConfig {
   /** 触发事件后执行被选中组件的方法 */
   method: string;
 }
+// #endregion CompItemConfig
 
+// #region DataSourceItemConfig
 export interface DataSourceItemConfig {
   /** 动作类型 */
   actionType: ActionType;
@@ -117,9 +128,13 @@ export interface DataSourceItemConfig {
   /** 代码参数 */
   params?: object;
 }
+// #endregion DataSourceItemConfig
 
+// #region EventActionItem
 export type EventActionItem = CompItemConfig | CodeItemConfig | DataSourceItemConfig;
+// #endregion EventActionItem
 
+// #region MComponent
 export interface MComponent {
   /** 组件ID，默认为${type}_${number}}形式, 如：page_123 */
   id: Id;
@@ -130,31 +145,56 @@ export interface MComponent {
   /** 组件根Dom上的class */
   className?: string;
   /* 关联事件集合 */
-  events?: EventConfig[] | DeprecatedEventConfig[];
+  events?: EventConfig[];
+  /** 是否隐藏 */
+  visible?: boolean;
+  /** 显示条件中配置的数据源条件的编译结果 */
+  condResult?: boolean;
   /** 组件根Dom的style */
-  style?: {
-    [key: string]: any;
-  };
+  style?: StyleSchema;
+  [NODE_CONDS_KEY]?: DisplayCond[];
+  [NODE_CONDS_RESULT_KEY]?: boolean;
   [key: string]: any;
 }
+// #endregion MComponent
 
+// #region MContainer
 export interface MContainer extends MComponent {
   /** 容器类型，默认为'container' */
   type?: NodeType.CONTAINER | string;
   /** 容器子元素 */
   items: (MComponent | MContainer)[];
 }
+// #endregion MContainer
 
+// #region MIteratorContainer
+export interface MIteratorContainer extends MContainer {
+  type: 'iterator-container';
+  iteratorData: any[];
+  dsField: string[];
+  itemConfig: {
+    layout: string;
+    [NODE_CONDS_KEY]: DisplayCond[];
+    style: Record<string, string | number>;
+  };
+}
+// #endregion MIteratorContainer
+
+// #region MPage
 export interface MPage extends MContainer {
   /** 页面类型 */
   type: NodeType.PAGE;
 }
+// #endregion MPage
 
+// #region MPageFragment
 export interface MPageFragment extends MContainer {
   /** 页面类型 */
   type: NodeType.PAGE_FRAGMENT;
 }
+// #endregion MPageFragment
 
+// #region MApp
 export interface MApp extends MComponent {
   /** App页面类型，app作为整个结构的根节点；有且只有一个 */
   type: NodeType.ROOT;
@@ -167,17 +207,22 @@ export interface MApp extends MComponent {
 
   dataSourceDeps?: DataSourceDeps;
   dataSourceCondDeps?: DataSourceDeps;
+  dataSourceMethodDeps?: DataSourceDeps;
 }
+// #endregion MApp
 
+// #region CodeBlockDSL
 export interface CodeBlockDSL {
   [id: Id]: CodeBlockContent;
 }
+// #endregion CodeBlockDSL
 
+// #region CodeBlockContent
 export interface CodeBlockContent {
   /** 代码块名称 */
   name: string;
   /** 代码块内容 */
-  content: ((...args: any[]) => any) | string;
+  content: ((...args: any[]) => any) | Function;
   /** 参数定义 */
   params: CodeParam[] | [];
   /** 注释 */
@@ -185,20 +230,30 @@ export interface CodeBlockContent {
   /** 扩展字段 */
   [propName: string]: any;
 }
+// #endregion CodeBlockContent
 
+// #region CodeParam
 export interface CodeParam {
   /** 参数名 */
   name: string;
   /** 扩展字段 */
   [propName: string]: any;
 }
+// #endregion CodeParam
 
 export interface PastePosition {
   left?: number;
   top?: number;
 }
 
-export type MNode = MComponent | MContainer | MPage | MApp;
+// #region MNode
+export type MNode = MComponent | MContainer | MIteratorContainer | MPage | MApp | MPageFragment;
+// #endregion MNode
+
+export interface MNodeInstance extends Omit<MNode, 'id'> {
+  id?: Id;
+  type?: string;
+}
 
 export enum HookType {
   /** 代码块钩子标识 */
@@ -214,6 +269,7 @@ export enum HookCodeType {
 
 export type DataSourceFieldType = 'null' | 'boolean' | 'object' | 'array' | 'number' | 'string' | 'any';
 
+// #region DataSchema
 export interface DataSchema {
   type?: DataSourceFieldType;
   /** 键名 */
@@ -229,7 +285,9 @@ export interface DataSchema {
   /** type === 'object' || type === 'array' */
   fields?: DataSchema[];
 }
+// #endregion DataSchema
 
+// #region MockSchema
 export interface MockSchema {
   /** 名称 */
   title: string;
@@ -242,7 +300,9 @@ export interface MockSchema {
   /** mock数据 */
   data: Record<string | number, any>;
 }
+// #endregion MockSchema
 
+// #region DataSourceSchema
 export interface DataSourceSchema {
   /** 数据源类型，根据类型来实例化；例如http则使用new HttpDataSource */
   type: string;
@@ -258,19 +318,25 @@ export interface DataSourceSchema {
   methods: CodeBlockContent[];
   /** mock数据 */
   mocks?: MockSchema[];
+  /** 事件 */
+  events: EventConfig[];
   /** 不执行init的环境 */
   disabledInitInJsEngine?: (JsEngine | string)[];
   /** 扩展字段 */
   [key: string]: any;
 }
+// #endregion DataSourceSchema
 
+// #region DepData
 export interface DepData {
   [nodeId: Id]: {
     /** 组件名称 */
     name: string;
     keys: (string | number)[];
+    data?: Record<string, any>;
   };
 }
+// #endregion DepData
 
 export type HookData = {
   /** 代码块id */
@@ -278,3 +344,29 @@ export type HookData = {
   /** 参数 */
   params?: object;
 };
+
+// #region DisplayCondItem
+export interface DisplayCondItem {
+  field: string[];
+  op: string;
+  value?: any;
+  range?: [number, number];
+}
+// #endregion DisplayCondItem
+
+// #region DisplayCond
+export interface DisplayCond {
+  cond: DisplayCondItem[];
+}
+// #endregion DisplayCond
+
+export interface UiComponentProps<T extends MNode = MNode> {
+  config: T;
+  model?: any;
+}
+
+// #region StyleSchema
+export interface StyleSchema {
+  [key: string]: any;
+}
+// #endregion StyleSchema

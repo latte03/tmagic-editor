@@ -3,6 +3,8 @@
     ref="form"
     :config="codeParamsConfig"
     :init-values="model"
+    :last-values="lastValues"
+    :is-compare="isCompare"
     :disabled="disabled"
     :size="size"
     :watch-props="false"
@@ -11,9 +13,15 @@
 </template>
 
 <script lang="ts" setup>
-import { computed, ref } from 'vue';
+import { computed, useTemplateRef } from 'vue';
 
-import { FormConfig, MForm } from '@tmagic/form';
+import {
+  type ContainerChangeEventData,
+  defineFormItem,
+  type FormItemConfig,
+  type FormValue,
+  MForm,
+} from '@tmagic/form';
 
 import type { CodeParamStatement } from '@editor/type';
 import { error } from '@editor/utils';
@@ -24,6 +32,10 @@ defineOptions({
 
 const props = defineProps<{
   model: any;
+  /** 对比模式下的历史值，透传给内部 MForm 用于逐项展示参数差异 */
+  lastValues?: any;
+  /** 是否开启对比模式 */
+  isCompare?: boolean;
   size?: 'small' | 'default' | 'large';
   disabled?: boolean;
   name: string;
@@ -32,27 +44,53 @@ const props = defineProps<{
 
 const emit = defineEmits(['change']);
 
-const form = ref<InstanceType<typeof MForm>>();
+const formRef = useTemplateRef<InstanceType<typeof MForm>>('form');
 
-const getFormConfig = (items: FormConfig = []) => [
-  {
+const getFormConfig = (items: FormItemConfig[] = []) => [
+  defineFormItem({
     type: 'fieldset',
     items,
     legend: '参数',
-    labelWidth: '70px',
+    labelPosition: 'top',
     name: props.name,
-  },
+  }),
 ];
 
-const codeParamsConfig = computed(() => getFormConfig(props.paramsConfig));
+const codeParamsConfig = computed(() =>
+  getFormConfig(
+    props.paramsConfig.map(({ name, text, extra, ...config }) => {
+      let { type } = config;
+      if (typeof type === 'function') {
+        type = type(undefined, {
+          model: props.model[props.name],
+        });
+      }
+      if (type && ['data-source-field-select', 'vs-code'].includes(type)) {
+        return {
+          ...config,
+          name,
+          text,
+          extra,
+        };
+      }
+      return {
+        type: 'data-source-field-select' as const,
+        name,
+        text,
+        extra,
+        fieldConfig: config,
+      };
+    }) as FormItemConfig[],
+  ),
+);
 
 /**
  * 参数值修改更新
  */
-const onParamsChangeHandler = async () => {
+const onParamsChangeHandler = async (v: FormValue, eventData: ContainerChangeEventData) => {
   try {
-    const value = await form.value?.submitForm(true);
-    emit('change', value);
+    const value = await formRef.value?.submitForm(true);
+    emit('change', value, eventData);
   } catch (e) {
     error(e);
   }

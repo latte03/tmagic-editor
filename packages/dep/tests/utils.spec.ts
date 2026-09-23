@@ -1,8 +1,10 @@
 import { describe, expect, test } from 'vitest';
 
-import { DataSchema } from '@tmagic/schema';
+import { DataSchema, NODE_CONDS_KEY } from '@tmagic/schema';
 import { DATA_SOURCE_FIELDS_SELECT_VALUE_PREFIX } from '@tmagic/utils';
 
+import Target from '../src/Target';
+import { DepTargetType } from '../src/types';
 import * as utils from '../src/utils';
 
 describe('utils', () => {
@@ -70,11 +72,11 @@ describe('utils', () => {
   });
 
   test('isDataSourceTemplate', () => {
-    expect(utils.isDataSourceTemplate('xxx${dsId.field}xxx${dsId.field}', 'dsId')).toBeTruthy();
-    expect(utils.isDataSourceTemplate('${dsId.field}', 'dsId')).toBeTruthy();
-    expect(utils.isDataSourceTemplate('${dsId}', 'dsId')).toBeTruthy();
-    expect(utils.isDataSourceTemplate('${dsId.field}', 'dsId1')).toBeFalsy();
-    expect(utils.isDataSourceTemplate('${dsId.field', 'dsId')).toBeFalsy();
+    expect(utils.isDataSourceTemplate('xxx${dsId.field}xxx${dsId.field}', { id: 'dsId', fields: [] })).toBeTruthy();
+    expect(utils.isDataSourceTemplate('${dsId.field}', { id: 'dsId', fields: [] })).toBeTruthy();
+    expect(utils.isDataSourceTemplate('${dsId}', { id: 'dsId', fields: [] })).toBeTruthy();
+    expect(utils.isDataSourceTemplate('${dsId.field}', { id: 'dsId1', fields: [] })).toBeFalsy();
+    expect(utils.isDataSourceTemplate('${dsId.field', { id: 'dsId', fields: [] })).toBeFalsy();
   });
 
   test('isSpecificDataSourceTemplate', () => {
@@ -125,7 +127,7 @@ describe('utils', () => {
   test('isUseDataSourceField', () => {
     expect(utils.isUseDataSourceField([`${DATA_SOURCE_FIELDS_SELECT_VALUE_PREFIX}dsID`, 'field'], 'dsID')).toBeTruthy();
     expect(utils.isUseDataSourceField([`${DATA_SOURCE_FIELDS_SELECT_VALUE_PREFIX}dsID`, 'field'], 'dsID1')).toBeFalsy();
-    expect(utils.isUseDataSourceField([`abcdsID`, 'field'], 'dsID')).toBeFalsy();
+    expect(utils.isUseDataSourceField(['abcdsID', 'field'], 'dsID')).toBeFalsy();
     expect(utils.isUseDataSourceField([123, 'field'], 123)).toBeFalsy();
   });
 
@@ -139,6 +141,7 @@ describe('utils', () => {
         id: 'dsId',
         methods: [],
         fields: arrayFields,
+        events: [],
       }),
     ).toBeTruthy();
 
@@ -148,6 +151,7 @@ describe('utils', () => {
         id: 'dsId',
         methods: [],
         fields: [...arrayFields, ...objectFields],
+        events: [],
       }),
     ).toBeTruthy();
 
@@ -157,6 +161,7 @@ describe('utils', () => {
         id: 'dsId',
         methods: [],
         fields: [...arrayFields, ...objectFields],
+        events: [],
       }),
     ).toBeFalsy();
 
@@ -166,6 +171,7 @@ describe('utils', () => {
         id: 'dsId',
         methods: [],
         fields: arrayFields,
+        events: [],
       }),
     ).toBeFalsy();
 
@@ -175,6 +181,7 @@ describe('utils', () => {
         id: 'dsId',
         methods: [],
         fields: arrayFields,
+        events: [],
       }),
     ).toBeFalsy();
 
@@ -184,7 +191,157 @@ describe('utils', () => {
         id: 'dsId',
         methods: [],
         fields: arrayFields,
+        events: [],
       }),
     ).toBeTruthy();
+  });
+
+  test('isDataSourceTarget', () => {
+    const ds = { id: 'ds_1', fields: [{ name: 'name', type: 'string' }] as DataSchema[] };
+
+    expect(utils.isDataSourceTarget(ds, 'k', null)).toBe(false);
+    expect(utils.isDataSourceTarget(ds, 'k', 123)).toBe(false);
+
+    expect(utils.isDataSourceTarget(ds, `${NODE_CONDS_KEY}_x`, '${ds_1.name}')).toBe(false);
+
+    expect(utils.isDataSourceTarget(ds, 'text', '${ds_1.name}')).toBe(true);
+    expect(utils.isDataSourceTarget(ds, 'text', '${other.name}')).toBe(false);
+
+    expect(utils.isDataSourceTarget(ds, 'text', { isBindDataSource: true, dataSourceId: 'ds_1' })).toBe(true);
+    expect(utils.isDataSourceTarget(ds, 'text', { isBindDataSource: true, dataSourceId: 'other' })).toBe(false);
+
+    expect(
+      utils.isDataSourceTarget(ds, 'text', {
+        isBindDataSourceField: true,
+        dataSourceId: 'ds_1',
+        template: 'foo${name}',
+      }),
+    ).toBe(true);
+
+    expect(utils.isDataSourceTarget(ds, 'text', [`${DATA_SOURCE_FIELDS_SELECT_VALUE_PREFIX}ds_1`, 'name'])).toBe(true);
+
+    expect(
+      utils.isDataSourceTarget(
+        { id: 'ds_1', fields: [{ name: 'arr', type: 'array', fields: [{ name: 'a' }] }] as DataSchema[] },
+        'text',
+        [`${DATA_SOURCE_FIELDS_SELECT_VALUE_PREFIX}ds_1`, 'arr', 'a'],
+        true,
+      ),
+    ).toBe(true);
+  });
+
+  test('isDataSourceCondTarget', () => {
+    const ds = { id: 'ds_1', fields: [{ name: 'name' }] as DataSchema[] };
+
+    expect(utils.isDataSourceCondTarget(ds, 'k', 'not-array')).toBe(false);
+    expect(utils.isDataSourceCondTarget(ds, 'k', null as any)).toBe(false);
+
+    expect(utils.isDataSourceCondTarget(ds, `${NODE_CONDS_KEY}_x`, ['ds_1', 'name'])).toBe(true);
+    expect(utils.isDataSourceCondTarget(ds, 'k', ['ds_1', 'name'])).toBe(false);
+    expect(utils.isDataSourceCondTarget(ds, `${NODE_CONDS_KEY}_x`, ['other', 'name'])).toBe(false);
+    expect(utils.isDataSourceCondTarget(ds, `${NODE_CONDS_KEY}_x`, ['ds_1', 'unknown'])).toBe(false);
+  });
+
+  test('createDataSourceTarget / Cond / Method', () => {
+    const ds = { id: 'ds_1', fields: [{ name: 'name' }] as DataSchema[] };
+    const t1 = utils.createDataSourceTarget(ds);
+    expect(t1.type).toBe(DepTargetType.DATA_SOURCE);
+    expect(t1.isTarget('text', '${ds_1.name}')).toBe(true);
+
+    const t2 = utils.createDataSourceCondTarget(ds);
+    expect(t2.type).toBe(DepTargetType.DATA_SOURCE_COND);
+    expect(t2.isTarget(`${NODE_CONDS_KEY}_x`, ['ds_1', 'name'])).toBe(true);
+
+    const t3 = utils.createDataSourceMethodTarget({
+      id: 'ds_1',
+      methods: [{ name: 'load', content: () => undefined, params: [] } as any],
+      fields: [{ name: 'name' }] as DataSchema[],
+    });
+    expect(t3.type).toBe(DepTargetType.DATA_SOURCE_METHOD);
+    expect(t3.isTarget('k', ['ds_1', 'load'])).toBe(true);
+    expect(t3.isTarget('k', ['ds_1', 'name'])).toBe(false);
+    expect(t3.isTarget('k', ['other', 'load'])).toBe(false);
+    expect(t3.isTarget('k', 'not-array')).toBe(false);
+    expect(t3.isTarget('k', ['ds_1', ''])).toBe(false);
+    expect(t3.isTarget('k', ['ds_1', 'unknown'])).toBe(true);
+  });
+
+  test('内置 target 带可序列化描述，可在 worker 中重建', () => {
+    const ds = { id: 'ds_1', fields: [{ name: 'name' }] as DataSchema[] };
+
+    expect(utils.createCodeBlockTarget('code_1', { name: 'fn', content: () => false, params: [] }).descriptor).toEqual({
+      type: DepTargetType.CODE_BLOCK,
+      id: 'code_1',
+      codeBlock: { name: 'fn' },
+    });
+    const dsWithMethods = {
+      ...ds,
+      methods: [{ name: 'load', content: () => undefined, params: [] } as any],
+    };
+    // DATA_SOURCE / COND 只带 id + fields，不透传完整数据源对象
+    expect(utils.createDataSourceTarget(dsWithMethods).descriptor).toEqual({
+      type: DepTargetType.DATA_SOURCE,
+      ds: { id: 'ds_1', fields: ds.fields },
+    });
+    expect(utils.createDataSourceCondTarget(dsWithMethods).descriptor).toEqual({
+      type: DepTargetType.DATA_SOURCE_COND,
+      ds: { id: 'ds_1', fields: ds.fields },
+    });
+    // METHOD 描述只保留名称，不带 content 等函数
+    expect(utils.createDataSourceMethodTarget(dsWithMethods).descriptor).toEqual({
+      type: DepTargetType.DATA_SOURCE_METHOD,
+      ds: { id: 'ds_1', methods: [{ name: 'load' }], fields: [{ name: 'name' }] },
+    });
+    // 自定义 target 无法序列化 isTarget，因此没有描述
+    expect(new Target({ id: 'custom', isTarget: () => true }).descriptor).toBeUndefined();
+  });
+
+  test('createTargetByDescriptor 用描述重建出等价的 target', () => {
+    const ds = { id: 'ds_1', fields: [{ name: 'name' }] as DataSchema[] };
+
+    const codeBlockTarget = utils.createTargetByDescriptor({
+      type: DepTargetType.CODE_BLOCK,
+      id: 'code_1',
+      codeBlock: { name: 'fn' },
+    });
+    expect(codeBlockTarget.type).toBe(DepTargetType.CODE_BLOCK);
+    expect(codeBlockTarget.name).toBe('fn');
+    expect(codeBlockTarget.isTarget('created', 'code_1')).toBe(true);
+
+    const dsTarget = utils.createTargetByDescriptor({ type: DepTargetType.DATA_SOURCE, ds });
+    expect(dsTarget.type).toBe(DepTargetType.DATA_SOURCE);
+    expect(dsTarget.isTarget('text', '${ds_1.name}')).toBe(true);
+
+    const condTarget = utils.createTargetByDescriptor({ type: DepTargetType.DATA_SOURCE_COND, ds });
+    expect(condTarget.isTarget(`${NODE_CONDS_KEY}_x`, ['ds_1', 'name'])).toBe(true);
+
+    const methodTarget = utils.createTargetByDescriptor(
+      { type: DepTargetType.DATA_SOURCE_METHOD, ds: { ...ds, methods: [] } },
+      { n1: { name: 'n1', keys: ['k'] } },
+    );
+    expect(methodTarget.isTarget('k', ['ds_1', 'load'])).toBe(true);
+    expect(methodTarget.deps.n1.keys).toEqual(['k']);
+
+    expect(() => utils.createTargetByDescriptor({ type: 'unknown' } as any)).toThrow();
+  });
+
+  test('traverseTarget 遍历所有 / 指定 type', () => {
+    const t1 = new Target({ id: '1', isTarget: () => true, type: 'a' });
+    const t2 = new Target({ id: '2', isTarget: () => true, type: 'b' });
+    const list = {
+      a: { 1: t1 },
+      b: { 2: t2 },
+    };
+    const visited: string[] = [];
+    utils.traverseTarget(list, (t) => visited.push(`${t.type}:${t.id}`));
+    expect(visited).toEqual(expect.arrayContaining(['a:1', 'b:2']));
+
+    const visitedA: string[] = [];
+    utils.traverseTarget(list, (t) => visitedA.push(`${t.type}:${t.id}`), 'a');
+    expect(visitedA).toEqual(['a:1']);
+
+    const visitedX: string[] = [];
+    utils.traverseTarget(list, (t) => visitedX.push(`${t.type}:${t.id}`), 'not-exist');
+    expect(visitedX).toEqual([]);
   });
 });

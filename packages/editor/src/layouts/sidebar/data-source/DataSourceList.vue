@@ -1,5 +1,12 @@
 <template>
-  <Tree :data="list" :node-status-map="nodeStatusMap" @node-click="clickHandler">
+  <Tree
+    :data="list"
+    :node-status-map="nodeStatusMap"
+    :indent="indent"
+    :next-level-indent-increment="nextLevelIndentIncrement"
+    @node-click="clickHandler"
+    @node-contextmenu="nodeContentMenuHandler"
+  >
     <template #tree-node-label="{ data }">
       <div
         :class="{
@@ -24,18 +31,18 @@
 </template>
 
 <script lang="ts" setup>
-import { computed, inject } from 'vue';
+import { computed } from 'vue';
 import { Close, Edit, View } from '@element-plus/icons-vue';
 
-import { DepTargetType } from '@tmagic/dep';
-import { tMagicMessageBox, TMagicTooltip } from '@tmagic/design';
-import { DepData, Id, MNode } from '@tmagic/schema';
+import { DepData, DepTargetType, Id, MNode } from '@tmagic/core';
+import { TMagicTooltip } from '@tmagic/design';
 
 import Icon from '@editor/components/Icon.vue';
 import Tree from '@editor/components/Tree.vue';
 import { useFilter } from '@editor/hooks/use-filter';
 import { useNodeStatus } from '@editor/hooks/use-node-status';
-import type { DataSourceListSlots, Services } from '@editor/type';
+import { useServices } from '@editor/hooks/use-services';
+import type { DataSourceListSlots, TreeNodeData } from '@editor/type';
 
 defineSlots<DataSourceListSlots>();
 
@@ -43,20 +50,26 @@ defineOptions({
   name: 'MEditorDataSourceList',
 });
 
+defineProps<{
+  indent?: number;
+  nextLevelIndentIncrement?: number;
+}>();
+
 const emit = defineEmits<{
   edit: [id: string];
   remove: [id: string];
+  'node-contextmenu': [event: MouseEvent, data: TreeNodeData];
 }>();
 
-const { depService, editorService, dataSourceService } = inject<Services>('services') || {};
+const { depService, editorService, dataSourceService } = useServices();
 
-const editable = computed(() => dataSourceService?.get('editable') ?? true);
+const editable = computed(() => dataSourceService.get('editable'));
 
-const dataSources = computed(() => dataSourceService?.get('dataSources') || []);
+const dataSources = computed(() => dataSourceService.get('dataSources'));
 
-const dsDep = computed(() => depService?.getTargets(DepTargetType.DATA_SOURCE) || {});
-const dsMethodDep = computed(() => depService?.getTargets(DepTargetType.DATA_SOURCE_METHOD) || {});
-const dsCondDep = computed(() => depService?.getTargets(DepTargetType.DATA_SOURCE_COND) || {});
+const dsDep = computed(() => depService.getTargets(DepTargetType.DATA_SOURCE));
+const dsMethodDep = computed(() => depService.getTargets(DepTargetType.DATA_SOURCE_METHOD));
+const dsCondDep = computed(() => depService.getTargets(DepTargetType.DATA_SOURCE_COND));
 
 const getKeyTreeConfig = (dep: DepData[string], type?: string, parentKey?: Id) =>
   dep.keys.map((key) => ({
@@ -81,16 +94,19 @@ const getNodeTreeConfig = (id: string, dep: DepData[string], type?: string, pare
  * @param deps 依赖
  * @param type 依赖类型
  */
-const mergeChildren = (dsId: Id, items: any[], deps: DepData, type?: string) => {
+const mergeChildren = (dsId: Id, pageItems: any[], deps: DepData, type?: string) => {
   Object.entries(deps).forEach(([id, dep]) => {
+    // 按页面分类显示
+    const page = pageItems.find((page) => page.key === dep.data?.pageId);
+
     // 已经生成过的节点
-    const nodeItem = items.find((item) => item.key === id);
+    const nodeItem = page?.items.find((item: any) => item.key === id);
     // 节点存在，则追加依赖的key
     if (nodeItem) {
       nodeItem.items = nodeItem.items.concat(getKeyTreeConfig(dep, type, nodeItem.key));
     } else {
       // 节点不存在，则生成
-      items.push(getNodeTreeConfig(id, dep, type, dsId));
+      page?.items.push(getNodeTreeConfig(id, dep, type, page.id));
     }
   });
 };
@@ -101,7 +117,15 @@ const list = computed(() =>
     const dsMethodDeps = dsMethodDep.value[ds.id]?.deps || {};
     const dsCondDeps = dsCondDep.value[ds.id]?.deps || {};
 
-    const items: any[] = [];
+    const items =
+      editorService.get('root')?.items.map((page) => ({
+        name: page.devconfig?.tabName || page.name,
+        type: 'node',
+        id: `${ds.id}_${page.id}`,
+        key: page.id,
+        items: [],
+      })) || [];
+
     // 数据源依赖分为三种类型：key/node、method、cond，是分开存储，这里将其合并展示
     mergeChildren(ds.id, items, dsDeps);
     mergeChildren(ds.id, items, dsMethodDeps, 'method');
@@ -112,7 +136,8 @@ const list = computed(() =>
       key: ds.id,
       name: ds.title,
       type: 'ds',
-      items,
+      // 只有一个页面不显示页面分类
+      items: items.length > 1 ? items.filter((page) => page.items.length) : items[0]?.items || [],
     };
   }),
 );
@@ -132,19 +157,13 @@ const editHandler = (id: string) => {
 };
 
 const removeHandler = async (id: string) => {
-  await tMagicMessageBox.confirm('确定删除?', '提示', {
-    confirmButtonText: '确定',
-    cancelButtonText: '取消',
-    type: 'warning',
-  });
-
   emit('remove', id);
 };
 
 // 选中组件
 const selectComp = (compId: Id) => {
-  const stage = editorService?.get('stage');
-  editorService?.select(compId);
+  const stage = editorService.get('stage');
+  editorService.select(compId);
   stage?.select(compId);
 };
 
@@ -154,7 +173,12 @@ const clickHandler = (event: MouseEvent, data: any) => {
   }
 };
 
+const nodeContentMenuHandler = (event: MouseEvent, data: TreeNodeData) => {
+  emit('node-contextmenu', event, data);
+};
+
 defineExpose({
+  nodeStatusMap,
   filter: filterTextChangeHandler,
 });
 </script>

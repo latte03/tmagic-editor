@@ -1,32 +1,36 @@
 <template>
   <div class="m-fields-data-source-method-select">
     <div class="data-source-method-select-container">
-      <MContainer
+      <MCascader
         class="select"
         :config="cascaderConfig"
         :model="model"
+        :name="name"
         :size="size"
+        :disabled="disabled"
+        :prop="prop"
         @change="onChangeHandler"
-      ></MContainer>
+      ></MCascader>
 
-      <TMagicButton
-        v-if="model[name] && isCustomMethod && hasDataSourceSidePanel"
-        class="m-fields-select-action-button"
-        :size="size"
-        @click="editCodeHandler"
+      <TMagicTooltip
+        v-if="model[name] && isCustomMethod && dataSourceSidePanel && !isCompare"
+        :content="notEditable ? '查看' : '编辑'"
       >
-        <MIcon :icon="!notEditable ? Edit : View"></MIcon>
-      </TMagicButton>
+        <TMagicButton class="m-fields-select-action-button" :size="size" @click="editCodeHandler">
+          <MIcon :icon="!notEditable ? Edit : View"></MIcon>
+        </TMagicButton>
+      </TMagicTooltip>
     </div>
 
     <CodeParams
       v-if="paramsConfig.length"
       name="params"
+      :key="model[name]"
       :model="model"
       :size="size"
       :disabled="disabled"
       :params-config="paramsConfig"
-      @change="onChangeHandler"
+      @change="onParamsChangeHandler"
     ></CodeParams>
   </div>
 </template>
@@ -35,49 +39,100 @@
 import { computed, inject, ref } from 'vue';
 import { Edit, View } from '@element-plus/icons-vue';
 
-import { TMagicButton } from '@tmagic/design';
-import { createValues, type FieldProps, filterFunction, type FormState, MContainer } from '@tmagic/form';
-import type { Id } from '@tmagic/schema';
+import type { Id } from '@tmagic/core';
+import { TMagicButton, TMagicTooltip } from '@tmagic/design';
+import {
+  type CascaderConfig,
+  type ContainerChangeEventData,
+  createValues,
+  type DataSourceMethodSelectConfig,
+  type FieldProps,
+  filterFunction,
+  type FormItemConfig,
+  type FormState,
+  MCascader,
+} from '@tmagic/form';
+import { DATA_SOURCE_SET_DATA_METHOD_NAME } from '@tmagic/utils';
 
 import CodeParams from '@editor/components/CodeParams.vue';
 import MIcon from '@editor/components/Icon.vue';
-import type { CodeParamStatement, DataSourceMethodSelectConfig, EventBus, Services } from '@editor/type';
+import { useServices } from '@editor/hooks/use-services';
+import type { CodeParamStatement, EventBus } from '@editor/type';
 import { SideItemKey } from '@editor/type';
+import { getFieldType } from '@editor/utils';
 
 defineOptions({
   name: 'MFieldsDataSourceMethodSelect',
 });
 
+const { dataSourceService, uiService } = useServices();
 const mForm = inject<FormState | undefined>('mForm');
-const services = inject<Services>('services');
-const eventBus = inject<EventBus>('eventBus');
+const eventBus = inject<EventBus | null>('eventBus', null);
 
 const emit = defineEmits(['change']);
-
-const dataSourceService = services?.dataSourceService;
 
 const props = withDefaults(defineProps<FieldProps<DataSourceMethodSelectConfig>>(), {
   disabled: false,
 });
 
-const hasDataSourceSidePanel = computed(() =>
-  (services?.uiService.get('sideBarItems') || []).find((item) => item.$key === SideItemKey.DATA_SOURCE),
+const dataSourceSidePanel = computed(() =>
+  (uiService.get('sideBarItems') || []).find((item) => item.$key === SideItemKey.DATA_SOURCE),
 );
 
 const notEditable = computed(() => filterFunction(mForm, props.config.notEditable, props));
 
-const dataSources = computed(() => dataSourceService?.get('dataSources'));
+/** 对比模式下隐藏查看/编辑操作按钮，仅保留只读展示。 */
+const isCompare = computed(() => Boolean(mForm?.isCompare));
+
+const dataSources = computed(() => dataSourceService.get('dataSources'));
 
 const isCustomMethod = computed(() => {
   const [id, name] = props.model[props.name];
 
-  const dataSource = dataSourceService?.getDataSourceById(id);
+  const dataSource = dataSourceService.getDataSourceById(id);
 
   return Boolean(dataSource?.methods.find((method) => method.name === name));
 });
 
 const getParamItemsConfig = ([dataSourceId, methodName]: [Id, string] = ['', '']): CodeParamStatement[] => {
   if (!dataSourceId) return [];
+
+  if (methodName === DATA_SOURCE_SET_DATA_METHOD_NAME) {
+    return [
+      {
+        name: 'field',
+        text: '字段',
+        type: 'data-source-field-select',
+        dataSourceId,
+        checkStrictly: true,
+      },
+      {
+        name: 'data',
+        text: '数据',
+        type: (_formState, { model }) => {
+          const fieldType = getFieldType(dataSourceService.getDataSourceById(`${dataSourceId}`), model.field);
+
+          let type = 'vs-code';
+
+          if (fieldType === 'number') {
+            type = 'number';
+          } else if (fieldType === 'string') {
+            type = 'text';
+          } else if (fieldType === 'boolean') {
+            type = 'switch';
+          }
+
+          return type;
+        },
+        language: 'javascript',
+        options: inject('codeOptions', {}),
+        autosize: {
+          minRows: 1,
+          maxRows: 10,
+        },
+      },
+    ];
+  }
 
   const paramStatements = dataSources.value
     ?.find((item) => item.id === dataSourceId)
@@ -91,63 +146,79 @@ const getParamItemsConfig = ([dataSourceId, methodName]: [Id, string] = ['', '']
   }));
 };
 
-const paramsConfig = ref<CodeParamStatement[]>(getParamItemsConfig(props.model.dataSourceMethod));
-
-const setParamsConfig = (dataSourceMethod: [Id, string], formState: any = {}) => {
-  // 通过下拉框选择的codeId变化后修正model的值，避免写入其他codeId的params
-  paramsConfig.value = dataSourceMethod ? getParamItemsConfig(dataSourceMethod) : [];
-
-  if (paramsConfig.value.length) {
-    props.model.params = createValues(formState, paramsConfig.value, {}, props.model.params);
-  } else {
-    props.model.params = {};
-  }
-};
+const paramsConfig = ref<CodeParamStatement[]>(getParamItemsConfig(props.model[props.name || 'dataSourceMethod']));
 
 const methodsOptions = computed(
   () =>
-    dataSources.value
-      ?.filter((ds) => ds.methods?.length || dataSourceService?.getFormMethod(ds.type).length)
-      ?.map((ds) => ({
-        label: ds.title || ds.id,
-        value: ds.id,
-        children: [
-          ...(dataSourceService?.getFormMethod(ds.type) || []),
-          ...(ds.methods || []).map((method) => ({
-            label: method.name,
-            value: method.name,
-          })),
-        ],
-      })) || [],
+    dataSources.value?.map((ds) => ({
+      label: ds.title || ds.id,
+      value: ds.id,
+      children: [
+        {
+          label: '设置数据',
+          value: DATA_SOURCE_SET_DATA_METHOD_NAME,
+        },
+        ...(dataSourceService?.getFormMethod(ds.type) || []),
+        ...(ds.methods || []).map((method) => ({
+          label: method.name,
+          value: method.name,
+        })),
+      ],
+    })) || [],
 );
 
-const cascaderConfig = computed(() => ({
+const cascaderConfig = computed<CascaderConfig>(() => ({
   type: 'cascader',
-  name: props.name,
   options: methodsOptions.value,
-  disable: props.disabled,
-  onChange: (formState: any, dataSourceMethod: [Id, string]) => {
-    setParamsConfig(dataSourceMethod, formState);
-
-    return dataSourceMethod;
-  },
 }));
 
 /**
  * 参数值修改更新
  */
 const onChangeHandler = (value: any) => {
-  props.model.params = value.params;
-  emit('change', props.model);
+  paramsConfig.value = getParamItemsConfig(value);
+
+  const changeRecords = [
+    {
+      propPath: props.prop,
+      value,
+    },
+  ];
+
+  changeRecords.push({
+    propPath: props.prop.replace(`${props.name}`, 'params'),
+    value: paramsConfig.value.length
+      ? createValues(mForm, paramsConfig.value as unknown as FormItemConfig[], {}, props.model.params)
+      : {},
+  });
+
+  emit('change', value, {
+    changeRecords,
+  });
+};
+
+/**
+ * 参数值修改更新
+ */
+const onParamsChangeHandler = (value: any, eventData: ContainerChangeEventData) => {
+  eventData.changeRecords?.forEach((record) => {
+    record.propPath = `${props.prop.replace(`${props.name}`, '')}${record.propPath}`;
+  });
+  emit('change', props.model[props.name], eventData);
 };
 
 const editCodeHandler = () => {
-  const [id] = props.model[props.name];
+  const [id, methodName] = props.model[props.name];
 
-  const dataSource = dataSourceService?.getDataSourceById(id);
+  const dataSource = dataSourceService.getDataSourceById(id);
 
   if (!dataSource) return;
 
-  eventBus?.emit('edit-data-source', id);
+  const sideBarItem = dataSourceSidePanel.value;
+  if (sideBarItem) {
+    uiService.set('sideBarActiveTabName', sideBarItem.text || sideBarItem.$key || SideItemKey.DATA_SOURCE);
+  }
+
+  eventBus?.emit('edit-data-source-method', id, methodName);
 };
 </script>

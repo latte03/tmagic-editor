@@ -1,3 +1,5 @@
+@use "common/var" as *;
+
 .m-editor-nav-menu {
   display: flex;
   z-index: 5;
@@ -5,20 +7,29 @@
   justify-content: space-between;
   -webkit-box-align: center;
   align-items: center;
-  background-color: $--nav--background-color;
+  background-color: $nav--background-color;
   font-size: 19.2px;
-  color: $--nav-color;
+  color: $nav-color;
   font-weight: 400;
   box-sizing: border-box;
   margin: 0px;
-  flex: 0 0 $--nav-height;
+  // 用 CSS 变量做主题化开关：默认没设 `--editor-nav-height` 时回落到
+  // SCSS 变量 `$nav-height`（common/var.scss，35px）；主题（如 magic-admin）
+  // 只需在祖先节点声明 `--editor-nav-height: 40px` 即可运行时覆盖，避免
+  // 走 `@use with` 那条对加载顺序极敏感的 SCSS 模块配置路径。
+  flex: 0 0 var(--editor-nav-height, #{$nav-height});
   border-bottom: 1px solid #d8dee8;
 
   > div {
     display: flex;
+    gap: 3px;
     height: 100%;
     z-index: 1;
     align-items: center;
+    flex-wrap: nowrap;
+    overflow: hidden;
+    position: relative;
+    min-width: 0;
   }
 
   .menu-center {
@@ -29,8 +40,33 @@
     justify-content: flex-end;
   }
 
+  .m-editor-nav-menu-slot-hidden {
+    position: absolute;
+    left: -99999px;
+    top: 0;
+    visibility: hidden;
+    pointer-events: none;
+  }
+
+  .m-editor-nav-menu-more-wrapper {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    height: 100%;
+
+    &.m-editor-nav-menu-more-wrapper-hidden {
+      visibility: hidden;
+      pointer-events: none;
+    }
+  }
+
+  .m-editor-nav-menu-more {
+    flex: 0 0 auto;
+  }
+
   .menu-item {
     flex-direction: row;
+    flex: 0 0 auto;
     -webkit-box-align: center;
     align-items: center;
     vertical-align: middle;
@@ -44,6 +80,7 @@
     transition: all 0.3s ease 0s;
     border-bottom: 2px solid transparent;
     margin: 0;
+    white-space: nowrap;
 
     .is-disabled {
       opacity: 0.5;
@@ -54,7 +91,7 @@
     }
 
     .is-text > i {
-      color: $--font-color;
+      color: $font-color;
     }
 
     .icon {
@@ -66,12 +103,48 @@
     }
 
     .menu-item-text {
-      color: $--nav-color;
+      color: $nav-color;
+      white-space: nowrap;
     }
 
     &.rule {
       .el-icon {
         transform: rotate(-90deg);
+      }
+    }
+
+    .t-button {
+      padding-left: 1px;
+      padding-right: 1px;
+    }
+  }
+}
+
+.m-editor-nav-menu-popover {
+  .m-editor-nav-menu-overflow-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 4px 0;
+
+    .menu-item {
+      display: flex;
+      align-items: center;
+      padding: 4px 8px;
+      cursor: pointer;
+      border-radius: 4px;
+
+      &:hover {
+        background-color: rgba(0, 0, 0, 0.05);
+      }
+
+      &.divider {
+        padding: 0;
+        cursor: default;
+
+        &:hover {
+          background-color: transparent;
+        }
       }
     }
   }

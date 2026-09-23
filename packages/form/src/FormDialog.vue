@@ -1,14 +1,17 @@
 <template>
   <TMagicDialog
     v-model="dialogVisible"
-    class="m-form-dialog"
+    :class="['m-form-dialog', effectiveTheme ? `m-theme--${effectiveTheme}` : '']"
     top="20px"
     append-to-body
     :title="title"
     :width="width"
     :zIndex="zIndex"
     :fullscreen="fullscreen"
-    :close-on-click-modal="false"
+    :close-on-click-modal="closeOnClickModal"
+    :close-on-press-escape="closeOnPressEscape"
+    :destroy-on-close="destroyOnClose"
+    :show-close="showClose"
     @close="closeHandler"
   >
     <div
@@ -27,6 +30,12 @@
         :label-width="labelWidth"
         :label-position="labelPosition"
         :inline="inline"
+        :prevent-submit-default="preventSubmitDefault"
+        :use-field-text-in-error="useFieldTextInError"
+        :type-match-valid="typeMatchValid"
+        :validate-on-init="validateOnInit"
+        :context="context"
+        :theme="effectiveTheme"
         @change="changeHandler"
       ></Form>
       <slot></slot>
@@ -41,7 +50,7 @@
         </TMagicCol>
         <TMagicCol :span="12">
           <slot name="footer">
-            <TMagicButton @click="cancel" size="small">取 消</TMagicButton>
+            <TMagicButton v-if="showCancel" @click="cancel" size="small">取 消</TMagicButton>
             <TMagicButton v-if="hasStep && stepActive > 1" type="info" size="small" @click="preStep"
               >上一步</TMagicButton
             >
@@ -59,12 +68,12 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref } from 'vue';
+import { computed, inject, provide, ref } from 'vue';
 
-import { TMagicButton, TMagicCol, TMagicDialog, TMagicRow } from '@tmagic/design';
+import { M_THEME_KEY, TMagicButton, TMagicCol, TMagicDialog, TMagicRow } from '@tmagic/design';
 
 import Form from './Form.vue';
-import { FormConfig, StepConfig } from './schema';
+import { ContainerChangeEventData, FormConfig, FormContext, FormValue, StepConfig } from './schema';
 
 defineOptions({
   name: 'MFormDialog',
@@ -77,21 +86,52 @@ const props = withDefaults(
     parentValues?: Object;
     width?: string | number;
     labelWidth?: string;
+    /** 是否开启类型匹配校验 */
+    typeMatchValid?: boolean;
+    /** 透传给内部 `MForm`，初始化完成后是否立即校验（默认 `false`） */
+    validateOnInit?: boolean;
     fullscreen?: boolean;
     disabled?: boolean;
     title?: string;
     inline?: boolean;
-    labelPosition?: string;
+    labelPosition?: 'top' | 'left' | 'right';
     zIndex?: number;
     size?: 'small' | 'default' | 'large';
     confirmText?: string;
+    preventSubmitDefault?: boolean;
+    closeOnClickModal?: boolean;
+    closeOnPressEscape?: boolean;
+    destroyOnClose?: boolean;
+    showClose?: boolean;
+    showCancel?: boolean;
+    /** 透传给内部 `MForm`，控制表单校验失败时错误提示前缀是否使用字段的 text 文案 */
+    useFieldTextInError?: boolean;
+    /** 透传给内部 `MForm` 的宿主业务上下文 */
+    context?: FormContext;
+    /**
+     * 主题名。优先级：传入 `theme` prop > 祖先 `provide(M_THEME_KEY)` > 空串。
+     * 计算结果会再次 `provide` 出去，使得 Dialog 被 Teleport 到 body 后，内部子树
+     * （包括 `MForm` 以及更深的 popover / dropdown）仍能拿到主题。
+     */
+    theme?: string;
   }>(),
   {
     config: () => [],
     values: () => ({}),
     confirmText: '确定',
+    closeOnClickModal: false,
+    closeOnPressEscape: false,
+    destroyOnClose: false,
+    showClose: true,
+    showCancel: true,
+    useFieldTextInError: true,
+    validateOnInit: false,
   },
 );
+
+const ancestorTheme = inject(M_THEME_KEY, null);
+const effectiveTheme = computed(() => props.theme || ancestorTheme?.value || '');
+provide(M_THEME_KEY, effectiveTheme);
 
 const emit = defineEmits(['close', 'submit', 'error', 'change']);
 
@@ -102,19 +142,25 @@ const stepActive = ref(1);
 const bodyHeight = ref(`${document.body.clientHeight - 194}px`);
 
 const stepCount = computed(() => {
-  const { length } = props.config;
-  for (let index = 0; index < length; index++) {
-    if (props.config[index].type === 'step') {
-      return (props.config[index] as StepConfig).items.length;
+  if (!Array.isArray(props.config)) {
+    return 0;
+  }
+
+  for (const item of props.config) {
+    if ('type' in item && item.type === 'step') {
+      return (item as StepConfig).items.length;
     }
   }
   return 0;
 });
 
 const hasStep = computed(() => {
-  const { length } = props.config;
-  for (let index = 0; index < length; index++) {
-    if (props.config[index].type === 'step') {
+  if (!Array.isArray(props.config)) {
+    return false;
+  }
+
+  for (const item of props.config) {
+    if ('type' in item && item.type === 'step') {
       return true;
     }
   }
@@ -129,8 +175,9 @@ const closeHandler = () => {
 
 const save = async () => {
   try {
+    const changeRecords = [...(form.value?.changeRecords || [])];
     const values = await form.value?.submitForm();
-    emit('submit', values);
+    emit('submit', values, { changeRecords });
   } catch (e) {
     emit('error', e);
   }
@@ -144,8 +191,8 @@ const nextStep = () => {
   stepActive.value += 1;
 };
 
-const changeHandler = (value: any) => {
-  emit('change', value);
+const changeHandler = (value: FormValue, eventData: ContainerChangeEventData) => {
+  emit('change', value, eventData);
 };
 
 const show = () => {

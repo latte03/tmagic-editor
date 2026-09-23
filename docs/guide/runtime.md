@@ -1,72 +1,328 @@
 # RUNTIME
-本章详细介绍如何深入理解tmagic-editor的打包，以及如何根据需求定制，修改tmagic-editor的页面打包发布方案。页面发布、打包相关的定制化开发，需要使用tmagic-editor的业务方，搭建好基于开源tmagic-editor的管理平台、存储服务等配套设施。
 
-## 实现一个 runtime
-在 [@tmagic/ui](./advanced/tmagic-ui.html) 部分，我们已经说过，runtime 和 UI 是配套实现的。每个版本的 runtime 都需要一个对应的 UI 来作为渲染器，实现渲染 DSL 呈现页面的功能。
+本章详细介绍 tmagic-editor 中 runtime 的概念、目录结构与实现方式。所有内容均与开源仓库 [`runtime/vue/`](https://github.com/Tencent/tmagic-editor/tree/master/runtime/vue) 一一对应，可以对照阅读。
 
-### UI
-一个 UI 应该至少包含一个渲染器，来实现[页面渲染](./advanced/page.html)。同时可以提供一些基础组件。具体实现可以参考[@tmagic/ui](./advanced/tmagic-ui.html)。
+## runtime 是什么
 
-### page
-runtime 的 `page` 部分，就是真实项目页面的渲染环境。发布出去的项目页都需要基于该部分来实现渲染功能。而 `page` 的主要逻辑，就是需要加载 UI，同时实现业务方需要的业务逻辑，比如：
-- 提供页面需要的全局 api
-- 业务需要的特殊实现逻辑
-- 加载第三方全局组件/插件等
+**runtime 是用来解析 DSL 的执行环境**。编辑器只负责生成 DSL，最终把它**渲染成可见页面**的工作交给 runtime。
 
-具体的 page 实现示例，可以参考
-- [vue3 runtime](https://github.com/Tencent/tmagic-editor/blob/master/runtime/vue3/page)
-- [vue2 runtime](https://github.com/Tencent/tmagic-editor/blob/master/runtime/vue2/page)
-- [react runtime](https://github.com/Tencent/tmagic-editor/blob/master/runtime/react/page)
+在一份完整的 tmagic-editor 项目中，runtime 同时承担两个角色：
 
-### playground
-runtime 的 `playground` 部分，和 `page` 做的事情几乎一致，业务方可以包含上述 `page` 所拥有的全部能力。但是，因为 playground 需要被编辑器加载，作为编辑器中页面模拟器的渲染容器，和编辑器通信，接受编辑器中组件的增删改查。所以，除了保持和 `page` 一样的渲染逻辑之外，`playground` 还要额外实现一套既定通信内容和 api，才能实现和编辑器的通信功能。
+| 角色 | 入口 | 用途 |
+| --- | --- | --- |
+| **page** | `runtime/vue/page/` | 线上发布产物，加载 `window.magicDSL` 渲染真实页面 |
+| **playground** | `runtime/vue/playground/` | 编辑器中央 iframe 加载的画布，响应增删改并渲染所见即所得 |
 
-#### onRuntimeReady
-**在 playground 页面渲染后**，需要调用接口通知编辑器完成加载。该调用需要传入一个参数 API，即挂载了增删改查功能的对象示例，提供给编辑器。
-```javascript
-window.magic?.onRuntimeReady(API)
+两者共用同一份组件、插件、数据源代码，只在入口（`main.ts` / `App.vue`）上有差异。
+
+::: tip
+DSL、playground 与 editor 之间的通信原理可以前往[教程](/guide/tutorial/)继续了解。
+:::
+
+## 创建 runtime 项目
+
+::: tip
+推荐用 `npm create tmagic@latest` / `pnpm create tmagic` 快速生成 runtime 模板，按提示选择 `runtime` 即可。
+:::
+
+生成的项目结构如下（与 [`runtime/vue/`](https://github.com/Tencent/tmagic-editor/tree/master/runtime/vue) 完全一致）：
+
+```bash
+runtime/vue
+├── page/                 # 线上 page 入口
+│   ├── App.vue
+│   ├── index.html
+│   ├── main.ts
+│   └── utils/
+├── playground/           # 编辑器内 iframe 入口
+│   ├── App.vue
+│   ├── index.html
+│   └── main.ts
+├── public/
+├── scripts/              # build 脚本（res / page / playground / all）
+├── tmagic.config.ts      # @tmagic/cli 配置：声明组件、插件、数据源
+├── tmagic.config.local.ts# 本地覆盖配置（可选）
+└── vite.config.ts        # 多入口构建：page + playground
 ```
 
-#### onPageElUpdate
-**playground 在每次更新了页面配置后**，调用一次 onPageElUpdate 并传入一个 DOM 节点，该方法作用是传入一个页面渲染组件的根节点，用来告知编辑器的模拟器遮罩如何作出反应。
-```javascript
-window.magic.onPageElUpdate(document.querySelector('.magic-ui-page'));
+## tmagic.config.ts：声明组件 / 插件 / 数据源
+
+`tmagic.config.ts` 是 [@tmagic/cli](./publish.md#tmagic-cli) 的入口，它会扫描 `packages` 列表，生成 `.tmagic/comp-entry.ts` 等 5 个入口文件，runtime 只需要从这些入口里 `import` 即可：
+
+```ts
+import { defineConfig } from '@tmagic/cli';
+
+export default defineConfig({
+  componentFileAffix: '.vue',
+  // 是否使用 vite + 异步组件，详见 page/main.ts 中的 defineAsyncComponent
+  dynamicImport: true,
+  npmConfig: {
+    client: 'pnpm',
+    keepPackageJsonClean: true,
+  },
+  packages: [
+    {
+      // key 为组件 type，需要与编辑器中 componentGroupList 的 type 对应
+      button: '@tmagic/vue-button',
+      container: '@tmagic/vue-container',
+      img: '@tmagic/vue-img',
+      'iterator-container': '@tmagic/vue-iterator-container',
+      overlay: '@tmagic/vue-overlay',
+      page: '@tmagic/vue-page',
+      'page-fragment': '@tmagic/vue-page-fragment',
+      'page-fragment-container': '@tmagic/vue-page-fragment-container',
+      qrcode: '@tmagic/vue-qrcode',
+      text: '@tmagic/vue-text',
+    },
+  ],
+});
 ```
 
-#### 提供 API
-| API      | 说明    | 参数      | 
-|---------- |-------- |---------- |
-|updateRootConfig| 根节点更新 | `root: MApp`  |
-|updatePageId| 更新当前页面 id | `id: string` |
-|select| 选中组件 | `id: string`|
-|add| 增加组件 | { `config` , `root` }: `UpdateData` |
-|update| 更新组件 | { `config` , `root` }: `UpdateData`  |
-|remove| 删除组件 | { `config` , `root` }: `UpdateData`  |
-|sortNode| 组件在容器间排序 |{ `src` , `dist`, `root` }: `SortEventData`  |
+`tmagic.config.local.ts` 用于本地覆盖（不会被提交），常见用法是把线上 npm 包临时替换为本地组件目录调试。
 
-runtime 的实现示例，可以参考tmagic-editor提供的：
-- [vue3 runtime](https://github.com/Tencent/tmagic-editor/blob/master/runtime/vue3)
-- [vue2 runtime](https://github.com/Tencent/tmagic-editor/blob/master/runtime/vue2)
-- [react runtime](https://github.com/Tencent/tmagic-editor/blob/master/runtime/react)
+执行 `npm run tmagic`（即 `tmagic entry`）后，runtime 根目录下会生成：
 
-### 页面发布
-如介绍中提到的，tmagic-editor页面发布方案，是对构建产物 `page/index.html` 进行项目信息注入。项目信息就是搭建平台存储的页面配置。发布时，将注入项目信息的 `page/index.html` 发布出去即可。
+```bash
+.tmagic/
+├── comp-entry.ts          # page 同步组件入口
+├── async-comp-entry.ts    # page 异步组件入口（dynamicImport 时使用）
+├── config-entry.ts        # 编辑器右侧表单配置
+├── value-entry.ts         # 组件初始值
+├── event-entry.ts         # 组件事件 / 方法列表
+├── plugin-entry.ts        # 插件入口
+├── datasource-entry.ts          # 同步数据源入口
+└── async-datasource-entry.ts    # 异步数据源入口
+```
 
-## 版本管理
-基于上一步提到的打包原理，每次构建后，得到的产物都可以进行归档编号，存为版本。涉及到的组件改动和新增修改，体现在各个版本中。
+> 详细产物说明见[页面发布 § @tmagic/cli](./publish.md#tmagic-cli)。
 
-<img src="https://image.video.qpic.cn/oa_88b7d-32_1233288257_1633783105283986" width="40%" alt="版本选择">
+## playground runtime 实现
 
-版本管理具体如何实现，这取决于使用tmagic-editor的业务方。版本管理具有如下优点：
-1. 对于已经配置好发布的项目，使用固定版本，不会被新版本的特性影响，保证项目线上稳定运行
-2. 发布的新版本如果出现问题，可以及时回退选择使用旧版本
+playground 是编辑器中央 iframe 加载的画布，最关键的逻辑就是把编辑器派发的 DSL 变更同步到本地 Vue 状态并触发重新渲染。
 
-## 结合业务定制
-tmagic-editor的静态资源构建，项目配置保存，页面发布，在tmagic-editor的提供的示例方案中，流程是：
-1. 触发构建，执行流水线，基于 runtime 执行 build 
-2. 将构建产物归档推送至 cdn，存为一个ui版本
-3. 项目配保存后，项目发布时，将项目配置发布至 CDN 存储为 DSL.js，同时根据当前项目使用的ui版本，获取到 page/index.html，将 DSL.js 引用方式以 script 标签形式写入。
-4. 将注入信息的 page/index.html 发布为项目静态资源 act.html
-5. 线上可加载 act.html 访问项目
+`@tmagic/vue-runtime-help` 提供的 `useEditorDsl` Hook 已经帮我们实现了与编辑器的通信（`onRuntimeReady` / `updateRootConfig` / `updatePageId` / `add` / `update` / `remove` 等）；只需要在入口里：
 
-其中各个步骤的定制，可以交由业务方根据tmagic-editor提供的示例进行自定义修改。
+1. 创建 `TMagicApp` 实例，注册组件、数据源、插件；
+2. 通过 `provide('app', app)` 把实例注入子组件；
+3. 在 `App.vue` 里使用 `useEditorDsl()` + `useComponent('page')` 渲染页面。
+
+完整的 [`runtime/vue/playground/main.ts`](https://github.com/Tencent/tmagic-editor/blob/master/runtime/vue/playground/main.ts)：
+
+```ts
+import { createApp } from 'vue';
+import TMagicApp, { DataSourceManager, DeepObservedData } from '@tmagic/core';
+
+import App from './App.vue';
+
+import '@tmagic/core/resetcss.css';
+
+DataSourceManager.registerObservedData(DeepObservedData);
+
+Promise.all([
+  import('../.tmagic/comp-entry'),
+  import('../.tmagic/plugin-entry'),
+  import('../.tmagic/datasource-entry'),
+]).then(([components, plugins, dataSources]) => {
+  const vueApp = createApp(App);
+
+  const app = new TMagicApp({
+    ua: window.navigator.userAgent,
+    platform: 'editor',
+  });
+
+  if (app.env.isWeb) {
+    app.setDesignWidth(window.document.documentElement.getBoundingClientRect().width);
+  }
+
+  Object.entries(components.default).forEach(([type, component]: [string, any]) => {
+    app.registerComponent(type, component);
+  });
+
+  Object.entries(dataSources.default).forEach(([type, ds]: [string, any]) => {
+    DataSourceManager.register(type, ds);
+  });
+
+  Object.values(plugins.default).forEach((plugin: any) => {
+    vueApp.use(plugin, { app });
+  });
+
+  window.appInstance = app;
+  vueApp.config.globalProperties.app = app;
+  vueApp.provide('app', app);
+
+  vueApp.mount('#app');
+});
+```
+
+[`playground/App.vue`](https://github.com/Tencent/tmagic-editor/blob/master/runtime/vue/playground/App.vue) 出乎意料地短：
+
+```vue
+<template>
+  <component v-if="pageConfig" :is="pageComponent" :key="pageConfig.id" :config="pageConfig"></component>
+</template>
+
+<script lang="ts" setup>
+import { useComponent, useEditorDsl } from '@tmagic/vue-runtime-help';
+
+const { pageConfig } = useEditorDsl();
+const pageComponent = useComponent('page');
+</script>
+```
+
+::: tip 关键点
+- `platform: 'editor'` 告知 `@tmagic/core` 进入编辑模式；
+- `useEditorDsl()` 内部已经调用 `window.magic?.onRuntimeReady({...})`，把 add/update/remove 等回调挂载到全局，编辑器通过 `iframe.contentWindow.magic` 触发；
+- 当 DSL 变化时，`pageConfig` 自动更新；当页面 DOM 渲染完成，`useEditorDsl` 会调用 `magic.onPageElUpdate(...)` 把页面元素同步给编辑器，让选中框能够吸附。
+:::
+
+## page runtime 实现（线上发布）
+
+[`runtime/vue/page/main.ts`](https://github.com/Tencent/tmagic-editor/blob/master/runtime/vue/page/main.ts) 与 playground 的差别在于：
+
+1. 不需要响应编辑器消息，直接读取 `window.magicDSL`（或 `localPreview` 模式下从 `localStorage` 读取）；
+2. 使用 `defineAsyncComponent` + 异步入口，按需加载组件，**减小首屏体积**；
+3. 数据源走 `registerDataSourceOnDemand`，只注册当前 DSL 用到的；
+4. 注入 `request` 与 `userRender` 等业务侧 API 给组件复用。
+
+```ts
+import { createApp, defineAsyncComponent, resolveDirective, withDirectives } from 'vue';
+
+import TMagicApp, { DataSourceManager, DeepObservedData, getUrlParam, registerDataSourceOnDemand } from '@tmagic/core';
+
+import components from '../.tmagic/async-comp-entry';
+import asyncDataSources from '../.tmagic/async-datasource-entry';
+import plugins from '../.tmagic/plugin-entry';
+
+import request, { service } from './utils/request';
+import AppComponent from './App.vue';
+import { getLocalConfig } from './utils';
+
+import '@tmagic/core/resetcss.css';
+
+DataSourceManager.registerObservedData(DeepObservedData);
+
+const vueApp = createApp(AppComponent);
+vueApp.use(request);
+
+const dsl = ((getUrlParam('localPreview') ? getLocalConfig() : window.magicDSL) || [])[0] || {};
+
+const app = new TMagicApp({
+  ua: window.navigator.userAgent,
+  config: dsl,
+  request: service,
+  curPage: getUrlParam('page'),
+  useMock: Boolean(getUrlParam('useMock')),
+});
+
+app.setDesignWidth(app.env.isWeb ? window.document.documentElement.getBoundingClientRect().width : 375);
+
+Object.entries(components).forEach(([type, component]: [string, any]) => {
+  app.registerComponent(type, defineAsyncComponent(component));
+});
+
+Object.values(plugins).forEach((plugin: any) => {
+  vueApp.use(plugin, { app });
+});
+
+registerDataSourceOnDemand(dsl, asyncDataSources).then((dataSources) => {
+  Object.entries(dataSources).forEach(([type, ds]: [string, any]) => {
+    DataSourceManager.register(type, ds);
+  });
+
+  vueApp.config.globalProperties.app = app;
+  vueApp.provide('app', app);
+  vueApp.mount('#app');
+});
+```
+
+[`page/App.vue`](https://github.com/Tencent/tmagic-editor/blob/master/runtime/vue/page/App.vue) 用 `useDsl()`（注意不是 `useEditorDsl`）：
+
+```vue
+<template>
+  <component :is="pageComponent" :config="pageConfig as MPage"></component>
+</template>
+
+<script lang="ts" setup>
+import type { MPage } from '@tmagic/core';
+import { useComponent, useDsl } from '@tmagic/vue-runtime-help';
+
+const { pageConfig, app } = useDsl();
+const pageComponent = useComponent('page');
+</script>
+```
+
+## vite 多入口构建
+
+`runtime/vue` 通过单个 vite 工程构建出两份产物（[`vite.config.ts`](https://github.com/Tencent/tmagic-editor/blob/master/runtime/vue/vite.config.ts)）：
+
+```ts
+build: {
+  rolldownOptions: {
+    input: {
+      page: path.resolve(__dirname, './page/index.html'),
+      playground: path.resolve(__dirname, './playground/index.html'),
+    },
+  },
+}
+```
+
+加上 `package.json` 中提供的 build 脚本：
+
+```json
+{
+  "scripts": {
+    "tmagic": "tmagic entry",
+    "dev": "vite --force",
+    "build": "rimraf ./dist && node scripts/build.mjs --type=all",
+    "build:libs": "node scripts/build.mjs --type=res",
+    "build:page": "node scripts/build.mjs --type=page",
+    "build:playground": "node scripts/build.mjs --type=playground"
+  }
+}
+```
+
+最常用的两个：
+
+- `npm run build:libs`：构建 **编辑器侧**用到的 `config / value / event / ds-config / ds-value` 五份 UMD 资源（输出到 `dist/entry/`），编辑器通过 `asyncLoadJs` 异步加载（参考[快速开始 § propsConfigs / propsValues](./index.md#propsconfigs-propsvalues)）。
+- `npm run build`：同时产出 `playground/index.html`、`page/index.html` 与 `entry/`，可以一份产物覆盖编辑器、预览、线上三种场景。
+
+## @tmagic/vue-runtime-help 常用 Hook
+
+| Hook | 作用 |
+| --- | --- |
+| `useEditorDsl()` | playground 入口使用，建立与编辑器通信、维护当前页面 `pageConfig` |
+| `useDsl()` | page 入口使用，从 `window.magicDSL` 中读取并维护 `pageConfig` |
+| `useComponent(type)` | 通过组件 type 解析出已注册的 Vue 组件（找不到时会回退到 `magic-ui-${type}`） |
+| `useApp()` | 取出注入的 `TMagicApp` 实例 |
+| `useComponentStatus()` | 获取组件在编辑器中的展示/禁用状态 |
+
+::: tip
+React runtime 的实现思路完全一致，对应包是 [`@tmagic/react-runtime-help`](https://github.com/Tencent/tmagic-editor/tree/master/runtime/react-runtime-help)，可以参照本节自行迁移。
+:::
+
+## 跨域
+
+playground 是被编辑器以 iframe 形式加载的，开发期需要保证 runtime 服务允许跨域。仓库里的做法是用 Vite 的 proxy 把 runtime 反代到 playground 同域：
+
+```ts
+// playground/vite.config.ts
+server: {
+  port: 8098,
+  proxy: {
+    '^/tmagic-editor/playground/runtime': {
+      target: 'http://127.0.0.1:8078',
+      changeOrigin: true,
+      prependPath: false,
+    },
+  },
+}
+```
+
+如果编辑器和 runtime 跨域部署，需要在 runtime 服务侧返回 `Access-Control-Allow-Origin`，并保证 iframe 的 `postMessage` 同源策略允许双方通信。
+
+## 进一步阅读
+
+- [基础概念](./conception.md)：编辑器、模拟器、runtime 的关系
+- [组件开发](./component.md)：组件四件套（component / form-config / init-value / event）
+- [页面发布](./publish.md)：page.html 注入 DSL 的发布流程
+- [教程](./tutorial/index.md)：从零实现一份 runtime，理解 magic API 与 DSL 解析

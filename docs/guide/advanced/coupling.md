@@ -25,12 +25,12 @@ tmagic-editor的联动，指这两种情况：
 }]`">
 </demo-block>
 
-在经过表单渲染器时，所有指出函数 API 都会传入当前渲染的**表单组件实例(vm)**，**当前项目(value)**，**当前表单model**，**表单值formValue**，model 即 vue 的[表单输入绑定](https://v3.cn.vuejs.org/guide/forms.html#%E5%9F%BA%E7%A1%80%E7%94%A8%E6%B3%95)，可以通过修改他来实现值联动。
+在经过表单渲染器时，所有注入的函数 API 都会传入当前渲染的**表单组件实例(vm)**，**当前项目(value)**，**当前表单model**，**表单值formValue**，model 即 vue 的[表单输入绑定](https://v3.cn.vuejs.org/guide/forms.html#%E5%9F%BA%E7%A1%80%E7%94%A8%E6%B3%95)，可以通过修改他来实现值联动。
 
 当然我们也可以通过上述的参数传入，以及其他函数 API 实现更多灵活的表单联动，具体参考[表单 API](../../form-config/relate)。
 
 ## 组件联动
-tmagic-editor在 @tmagic/core 中，实现了组件的事件绑定/分发机制。在组件渲染时，每个组件在 @tmagic/ui 中经过基础组件渲染时，会被基础组件注入公共方法的实现。如下对按钮配置了**点击使文本隐藏**的联动事件，那么在对应按钮被点击时，将会触发对应绑定文本的隐藏。
+tmagic-editor在 `@tmagic/core` 中，实现了组件的事件绑定/分发机制。在组件渲染时，每个组件在经过 `@tmagic/vue-container`（vue 端）或 `@tmagic/react-container`（react 端）等基础渲染组件渲染时，会被基础组件注入公共方法的实现。如下对按钮配置了**点击使文本隐藏**的联动事件，那么在对应按钮被点击时，将会触发对应绑定文本的隐藏。
 
 <img src="https://image.video.qpic.cn/oa_88b7d-10_2117738923_1637238863127559">
 
@@ -83,41 +83,43 @@ export default {
 </template>
 
 <script lang="ts" setup>
-import { defineComponent, inject } from 'vue';
+import { type ComponentProps, registerNodeHooks, useApp } from '@tmagic/vue-runtime-help';
 
-const props = defineProps({
-  config: {
-    type: Object,
-    default: () => ({}),
-  },
-})
+const props = defineProps<ComponentProps>()
 
-const app: Core | undefined = inject('app');
-
-const node = app?.page?.getNode(props.config.id);
+const { app, node } = useApp(props);
 
 const onClick = () => {
   // app.emit 第一个参数为事件名，其余参数为你要传给接受事件组件的参数
-  app?.emit("yourComponent:finishSomething", node, /*可以传参给接收方*/);
+  app.emit("yourComponent:finishSomething", node, /*可以传参给接收方*/);
 };
 
+// 此处实现事件动作
+// 注意：示例中的 ElMessage 仅作演示，业务可替换为自己的弹窗工具
+import { ElMessage } from 'element-plus';
+
+const showToast = () => {
+  ElMessage('测试 vue3');
+};
+
+// 实际触发时是调用node上的方法，所以需要将该方法暴露到node上
+registerNodeHooks(node, {
+  toast: showToast,
+});
+
 defineExpose({
-  // 此处实现事件动作
-  // 实际触发时是调用vue实例上的方法，所以需要将改方法暴露到实例上
-  toast: (/*触发组件node*/, /*接收触发事件组件传进来的参数*/) => {
-    toast('测试 vue3')
-  }
+  toast: showToast,
 });
 </script>
 ```
 
 #### react 版本实现
-在 react 的实现中，由于tmagic-editor提供的 @tmagic/ui-react 版本是用 hook 实现的。所以组件开发我们也相应的需要使用 hook 方式。
+在 react 的实现中，由于tmagic-editor提供的 @tmagic/react-runtime-help 版本是用 hook 实现的。所以组件开发我们也相应的需要使用 hook 方式。
 
 ```jsx
 import React from 'react';
 
-import { useApp } from '@tmagic/ui-react';
+import { useApp } from '@tmagic/react-runtime-help';
 
 function Test({ config }) {
   // react 和 vue 实现不同，我们通过 useApp 这个 hook 来提供 app 等核心内容
@@ -151,10 +153,3 @@ function Test({ config }) {
 
 export default Test;
 ```
-
-按照上述实现触发事件和事件动作，就可以完成组件的联动事件分发响应。
-
-:::tip
-组件事件的联动是借助了@tmagic/core，需要在组件实例化的时候将需要暴露的方法提供给@tmagic/core，在上述例子中useApp方法的调用就是完成这个操作，useApp返回的app对象就是@tmagic/core的实例。在vue的实现中useApp是将整个vue实例都提供给了app，所以需要defineExpose来定义vue instance上的方法，react则是将需要暴露的方法作为useApp的参数传入
-:::
-

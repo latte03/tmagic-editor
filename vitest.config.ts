@@ -1,43 +1,96 @@
-import { resolve } from 'path';
+import { resolve } from 'node:path';
 
 import { defineConfig } from 'vitest/config';
 import Vue from '@vitejs/plugin-vue';
 
-const r = (p: string) => resolve(__dirname, p);
+const r = (p: string) => resolve(import.meta.dirname, p);
+
+const alias = {
+  '@editor': r('./packages/editor/src'),
+  '@form': r('./packages/form/src'),
+  '@form/headless': r('./packages/form/src/headless.ts'),
+  '@tmagic/form/headless': r('./packages/form/src/headless.ts'),
+  '@tmagic/form': r('./packages/form/src'),
+  '@tmagic/editor/headless': r('./packages/editor/src/headless.ts'),
+  '@data-source': r('./packages/data-source/src'),
+};
 
 export default defineConfig({
-  plugins: [Vue()],
-
   test: {
-    exclude: [
-      '**/node_modules/**',
-      '**/dist/**',
-      '**/cypress/**',
-      '**/.{idea,git,cache,output,temp}/**',
-      'magic-admin/**',
-    ],
-    include: [
-      './packages/editor/tests/**',
-      './packages/form/tests/unit/utils/**',
-      './packages/stage/tests/**',
-      './packages/utils/tests/**',
-      './packages/data-source/tests/**',
-      './packages/dep/tests/**',
-    ],
-    environment: 'jsdom',
-  },
-
-  resolve: {
-    alias: {
-      '@editor': r('./packages/editor/src'),
-      '@form': r('./packages/form/src'),
-      '@data-source': r('./packages/data-source/src'),
-      '@tmagic/core': r('./packages/core/src'),
-      '@tmagic/utils': r('./packages/utils/src'),
-      '@tmagic/editor': r('./packages/editor/src'),
-      '@tmagic/stage': r('./packages/stage/src'),
-      '@tmagic/schema': r('./packages/schema/src'),
-      '@tmagic/data-source': r('./packages/data-source/src'),
+    coverage: {
+      include: ['packages/*/src/**'],
+      exclude: [
+        './runtime/**',
+        './playground/**',
+        './docs/**',
+        './packages/*/dist/**',
+        './packages/*/types/**',
+        './packages/*/tests/**',
+        './packages/cli/lib/**',
+        './packages/design/**',
+        './packages/element-plus-adapter/**',
+        './packages/tdesign-vue-next-adapter/**',
+      ],
+      reporter: ['text-summary', 'json-summary', 'html'],
+      thresholds: {
+        lines: 85,
+      },
     },
+    projects: [
+      {
+        plugins: [Vue()],
+        resolve: { alias },
+        test: {
+          name: 'dom',
+          include: ['./packages/*/tests/**', './runtime/*/tests/**'],
+          exclude: [
+            './packages/cli/tests/**',
+            './packages/editor/tests/unit/hooks/use-stage.spec.ts',
+            // 多份用例共用的脚手架模块，本身不含用例
+            './packages/*/tests/**/helpers/**',
+          ],
+          environment: 'happy-dom',
+          pool: 'vmThreads',
+          vmMemoryLimit: '2GB',
+          maxWorkers: 8,
+          // 配置不同 pool/maxWorkers 的项目需要分到不同 group，否则 vitest 无法调度
+          sequence: { groupOrder: 0 },
+        },
+      },
+      {
+        plugins: [Vue()],
+        resolve: { alias },
+        test: {
+          name: 'dom-forks',
+          include: ['./packages/editor/tests/unit/hooks/use-stage.spec.ts'],
+          environment: 'happy-dom',
+          pool: 'forks',
+          isolate: false,
+          sequence: { groupOrder: 1 },
+        },
+      },
+      {
+        plugins: [Vue()],
+        resolve: { alias },
+        test: {
+          name: 'node',
+          include: ['./packages/cli/tests/**', './packages/form/tests/node/**'],
+          environment: 'node',
+          pool: 'forks',
+          isolate: false,
+          sequence: { groupOrder: 2 },
+        },
+      },
+      {
+        test: {
+          name: 'scripts',
+          include: ['./scripts/**/*.spec.ts'],
+          environment: 'node',
+          pool: 'forks',
+          isolate: false,
+          sequence: { groupOrder: 3 },
+        },
+      },
+    ],
   },
 });

@@ -1,7 +1,7 @@
 /*
  * Tencent is pleased to support the open source community by making TMagicEditor available.
  *
- * Copyright (C) 2023 THL A29 Limited, a Tencent company.  All rights reserved.
+ * Copyright (C) 2025 Tencent.  All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,20 +15,98 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-import { reactive } from 'vue';
+import { reactive, shallowReactive } from 'vue';
+import { throttle } from 'lodash-es';
 
-import { DepTargetType, type Target, Watcher } from '@tmagic/dep';
-import type { Id, MNode } from '@tmagic/schema';
+import type { DepData, DepExtendedData, Id, MApp, MNode, Target } from '@tmagic/core';
+import { DepTargetType, traverseTarget, Watcher } from '@tmagic/core';
+import { isPage } from '@tmagic/utils';
+
+import { CollectWorkerClient } from '@editor/utils/dep/collect-worker-client';
+import { IdleTask } from '@editor/utils/dep/idle-task';
+import type { DepsData } from '@editor/utils/dep/worker';
 
 import BaseService from './BaseService';
 
+export interface DepEvents {
+  'add-target': [target: Target];
+  'remove-target': [id: string | number, type: string | DepTargetType];
+  collected: [nodes: MNode[], deep: boolean];
+  'ds-collected': [nodes: MNode[], deep: boolean];
+}
+
+interface State {
+  collecting: boolean;
+  taskLength: number;
+}
+
+type StateKey = keyof State;
+
+/**
+ * 一次 collectIdle 调用对应一个批次。批次自行统计入队/完成的任务数，在自身任务全部完成或被中断时
+ * 结算对应的 Promise，避免多次快速触发时共用 idleTask 的 finish 事件造成的串扰、提前 resolve，
+ * 以及 clearTasks 后 Promise 永不 resolve（collecting 卡死、监听器泄漏）。
+ */
+interface CollectBatch {
+  nodes: MNode[];
+  deep: boolean;
+  pending: number;
+  dsPending: number;
+  collectedEmitted: boolean;
+  dsSettled: boolean;
+  aborted: boolean;
+  resolve: (completed: boolean) => void;
+}
+
 class Dep extends BaseService {
+  private state = shallowReactive<State>({
+    collecting: false,
+    taskLength: 0,
+  });
+
+  private idleTask = new IdleTask<void>();
+
+  private collectWorker = new CollectWorkerClient();
+
   private watcher = new Watcher({ initialTargets: reactive({}) });
+
+  private waitingWorker?: Promise<void>;
+
+  private resolveWaitingWorker?: () => void;
+
+  private workerGeneration = 0;
+
+  private activeBatches = new Set<CollectBatch>();
+
+  constructor() {
+    super();
+
+    this.idleTask.on(
+      'update-task-length',
+      throttle(({ length }) => {
+        this.set('taskLength', length);
+      }, 1000),
+    );
+  }
+
+  public set<K extends StateKey, T extends State[K]>(name: K, value: T) {
+    this.state[name] = value;
+  }
+
+  public get<K extends StateKey>(name: K): State[K] {
+    return this.state[name];
+  }
 
   public removeTargets(type: string = DepTargetType.DEFAULT) {
     this.watcher.removeTargets(type);
 
-    this.emit('remove-target');
+    const targets = this.watcher.getTargets(type);
+
+    if (!targets) return;
+
+    for (const target of Object.values(targets)) {
+      this.emit('remove-target', target.id, type);
+    }
   }
 
   public getTargets(type: string = DepTargetType.DEFAULT) {
@@ -46,16 +124,149 @@ class Dep extends BaseService {
 
   public removeTarget(id: Id, type: string = DepTargetType.DEFAULT) {
     this.watcher.removeTarget(id, type);
-    this.emit('remove-target');
+    this.emit('remove-target', id, type);
   }
 
   public clearTargets() {
     this.watcher.clearTargets();
   }
 
-  public collect(nodes: MNode[], deep = false, type?: DepTargetType) {
-    this.watcher.collect(nodes, deep, type);
+  public collect(nodes: MNode[], depExtendedData: DepExtendedData = {}, deep = false, type?: DepTargetType) {
+    this.set('collecting', true);
+
+    const targets = this.watcher.getCollectableTargets(type);
+
+    if (targets.length) {
+      for (const node of nodes) {
+        // 先删除原有依赖，再批量收集
+        if (isPage(node)) {
+          for (const target of targets) {
+            this.removePageDep(target, depExtendedData);
+          }
+        } else {
+          this.watcher.removeTargetsDep(targets, node);
+        }
+        this.watcher.collectItems(node, targets, depExtendedData, deep);
+      }
+    }
+
+    this.set('collecting', false);
+
     this.emit('collected', nodes, deep);
+    this.emit('ds-collected', nodes, deep);
+  }
+
+  /**
+   * 空闲收集依赖
+   *
+   * 遍历匹配是整个收集过程中最耗时的部分（要深度遍历节点树并对每个属性做 target 匹配），
+   * 节点/数据源多时在主线程执行会长时间卡死页面，因此优先交给 worker 执行，主线程只负责把结果写回 target。
+   * 自定义 target 的 isTarget 是无法跨线程传递的闭包函数（没有 descriptor），仍走主线程空闲队列；
+   * worker 不可用（如 SSR）或执行失败时也会回退到主线程空闲队列。
+   */
+  public async collectIdle(nodes: MNode[], depExtendedData: DepExtendedData = {}, deep = false, type?: DepTargetType) {
+    if (this.waitingWorker) {
+      await this.waitingWorker;
+    }
+
+    const batch: CollectBatch = {
+      nodes,
+      deep,
+      pending: 0,
+      dsPending: 0,
+      collectedEmitted: false,
+      dsSettled: false,
+      aborted: false,
+      resolve: () => {},
+    };
+
+    const workerTargets: Target[] = [];
+
+    for (const target of this.watcher.getCollectableTargets(type)) {
+      if (target.descriptor && this.collectWorker.isSupported) {
+        workerTargets.push(target);
+      } else {
+        this.enqueueTasks(nodes, target, depExtendedData, deep, batch);
+      }
+    }
+
+    if (workerTargets.length && nodes.length) {
+      this.collectByCollectWorker(nodes, workerTargets, depExtendedData, deep, batch);
+    }
+
+    // 没有命中任何 target，无需收集，直接完成
+    if (batch.pending === 0) {
+      this.emit('collected', nodes, deep);
+      this.updateCollectingState();
+      return true;
+    }
+
+    this.activeBatches.add(batch);
+    this.set('collecting', true);
+
+    return new Promise<boolean>((resolve) => {
+      batch.resolve = resolve;
+    });
+  }
+
+  public collectByWorker(dsl: MApp) {
+    this.set('collecting', true);
+    this.workerGeneration += 1;
+    const generation = this.workerGeneration;
+
+    const { promise, resolve: waitingResolve } = Promise.withResolvers<void>();
+
+    this.waitingWorker = promise;
+    this.resolveWaitingWorker = waitingResolve;
+
+    return this.collectWorker.collectDsl(dsl).then((deps) => {
+      const depsData: DepsData = deps || {};
+
+      if (generation !== this.workerGeneration) {
+        waitingResolve();
+        return depsData;
+      }
+
+      traverseTarget(this.watcher.getTargetsList(), (target) => {
+        if (depsData[target.type]?.[target.id]) {
+          target.deps = reactive(depsData[target.type][target.id]);
+
+          if (target.type === DepTargetType.DATA_SOURCE && dsl.dataSourceDeps) {
+            dsl.dataSourceDeps[target.id] = target.deps;
+          } else if (target.type === DepTargetType.DATA_SOURCE_COND && dsl.dataSourceCondDeps) {
+            dsl.dataSourceCondDeps[target.id] = target.deps;
+          } else if (target.type === DepTargetType.DATA_SOURCE_METHOD && dsl.dataSourceMethodDeps) {
+            dsl.dataSourceMethodDeps[target.id] = target.deps;
+          }
+        }
+      });
+
+      this.set('collecting', false);
+      this.emit('collected', dsl.items, true);
+      this.emit('ds-collected', dsl.items, true);
+      waitingResolve();
+      if (this.waitingWorker === promise) {
+        this.waitingWorker = undefined;
+        this.resolveWaitingWorker = undefined;
+      }
+
+      return depsData;
+    });
+  }
+
+  public collectNode(node: MNode, target: Target, depExtendedData: DepExtendedData = {}, deep = false) {
+    // 先删除原有依赖，重新收集
+    if (isPage(node)) {
+      this.removePageDep(target, depExtendedData);
+    } else if (deep) {
+      // deep 收集会覆盖整棵子树，删除也要同步清掉子孙旧依赖
+      this.watcher.removeTargetDep(target, node);
+    } else {
+      // 非 deep 只动当前节点，避免误清子节点上其他尚未重收的依赖
+      target.removeDep(node.id);
+    }
+
+    this.watcher.collectItem(node, target, depExtendedData, deep);
   }
 
   public clear(nodes?: MNode[]) {
@@ -72,6 +283,272 @@ class Dep extends BaseService {
 
   public hasSpecifiedTypeTarget(type: string = DepTargetType.DEFAULT): boolean {
     return this.watcher.hasSpecifiedTypeTarget(type);
+  }
+
+  public clearIdleTasks() {
+    this.abortActiveBatches();
+    this.idleTask.clearTasks();
+    // 丢掉 worker 在途任务，避免 abort 后的长任务继续占着常驻 worker
+    this.collectWorker.abort();
+  }
+
+  public on<Name extends keyof DepEvents, Param extends DepEvents[Name]>(
+    eventName: Name,
+    listener: (...args: Param) => void | Promise<void>,
+  ) {
+    return super.on(eventName, listener as any);
+  }
+
+  public once<Name extends keyof DepEvents, Param extends DepEvents[Name]>(
+    eventName: Name,
+    listener: (...args: Param) => void | Promise<void>,
+  ) {
+    return super.once(eventName, listener as any);
+  }
+
+  public reset() {
+    this.abortActiveBatches();
+    this.workerGeneration += 1;
+    this.resolveWaitingWorker?.();
+    this.resolveWaitingWorker = undefined;
+    this.waitingWorker = undefined;
+    this.idleTask.clearTasks();
+    this.collectWorker.abort();
+
+    for (const type of Object.keys(this.watcher.getTargetsList())) {
+      this.removeTargets(type);
+    }
+
+    this.set('collecting', false);
+  }
+
+  public destroy() {
+    this.idleTask.removeAllListeners();
+
+    this.removeAllListeners();
+    this.reset();
+    this.removeAllPlugins();
+    this.idleTask.removeAllListeners();
+    this.collectWorker.terminate();
+  }
+
+  public emit<Name extends keyof DepEvents, Param extends DepEvents[Name]>(eventName: Name, ...args: Param) {
+    return super.emit(eventName, ...args);
+  }
+
+  /**
+   * 删除指定 page 在该 target 下的旧依赖：
+   * 按 pageId 匹配，可清掉页面内已被删除节点的残留依赖
+   */
+  private removePageDep(target: Target, depExtendedData: DepExtendedData = {}) {
+    for (const depKey of Object.keys(target.deps)) {
+      const dep = target.deps[depKey];
+      if (dep.data?.pageId && dep.data.pageId === depExtendedData.pageId) {
+        delete target.deps[depKey];
+      }
+    }
+  }
+
+  /**
+   * 把遍历匹配交给 worker，结果回来后按 target 分片写回主线程
+   */
+  private collectByCollectWorker(
+    nodes: MNode[],
+    targets: Target[],
+    depExtendedData: DepExtendedData,
+    deep: boolean,
+    batch: CollectBatch,
+  ) {
+    const hasDataSource = targets.some((target) => target.type === DepTargetType.DATA_SOURCE);
+
+    // 先占位，避免 worker 返回前批次被误判为已完成（提前 resolve、collecting 提前复位）
+    this.beginBatchTask(batch, hasDataSource);
+
+    this.collectWorker
+      .collect({
+        nodes,
+        targets: targets.map((target) => target.descriptor!),
+        depExtendedData,
+        deep,
+      })
+      .then((result) => {
+        if (batch.aborted) return;
+
+        for (const target of targets) {
+          if (result) {
+            // 写回是纯字典操作，但数据量大时同样会占用主线程，因此按 target 拆成空闲任务
+            this.enqueueApplyTask(target, result.deps[target.type]?.[target.id] || {}, result.nodeIds, batch, {
+              nodes,
+              depExtendedData,
+              deep,
+            });
+          } else {
+            this.enqueueTasks(nodes, target, depExtendedData, deep, batch);
+          }
+        }
+      })
+      .finally(() => {
+        // 释放占位：必须在新任务入队之后，否则批次会在中途被判定为完成
+        this.onBatchTaskDone(batch, hasDataSource);
+      });
+  }
+
+  /**
+   * 用 worker 的收集结果替换 target 上这批节点的依赖
+   */
+  private enqueueApplyTask(
+    target: Target,
+    deps: DepData,
+    nodeIds: Id[],
+    batch: CollectBatch,
+    { nodes, depExtendedData, deep }: { nodes: MNode[]; depExtendedData: DepExtendedData; deep: boolean },
+  ) {
+    const isDataSource = target.type === DepTargetType.DATA_SOURCE;
+
+    this.beginBatchTask(batch, isDataSource);
+
+    this.idleTask.enqueueTask(
+      () => {
+        try {
+          // target 可能在 worker 收集期间被移除或重建（如修改数据源字段）
+          const current = this.watcher.getTarget(target.id, target.type);
+          if (current !== target) {
+            // 已被同 id 的新 target 替换时，用当前 target 在主线程补收，避免依赖空窗
+            if (current) {
+              this.enqueueTasks(nodes, current, depExtendedData, deep, batch);
+            }
+            return;
+          }
+
+          // 页面按 pageId 匹配删除，可清掉页面内已被删除节点的残留依赖
+          if (nodes.some((node) => isPage(node))) {
+            this.removePageDep(target, depExtendedData);
+          }
+
+          for (const id of nodeIds) {
+            target.removeDep(id);
+          }
+
+          for (const [id, dep] of Object.entries(deps)) {
+            target.deps[id] = dep;
+          }
+        } finally {
+          this.onBatchTaskDone(batch, isDataSource);
+        }
+      },
+      undefined,
+      isDataSource,
+    );
+  }
+
+  private enqueueTasks(
+    nodes: MNode[],
+    target: Target,
+    depExtendedData: DepExtendedData,
+    deep: boolean,
+    batch: CollectBatch,
+  ) {
+    for (const node of nodes) {
+      this.enqueueTask(node, target, depExtendedData, deep, batch);
+    }
+  }
+
+  private enqueueTask(
+    node: MNode,
+    target: Target,
+    depExtendedData: DepExtendedData,
+    deep: boolean,
+    batch: CollectBatch,
+  ) {
+    const isDataSource = target.type === DepTargetType.DATA_SOURCE;
+
+    this.beginBatchTask(batch, isDataSource);
+
+    this.idleTask.enqueueTask(
+      () => {
+        try {
+          this.collectNode(node, target, depExtendedData);
+        } finally {
+          this.onBatchTaskDone(batch, isDataSource);
+        }
+      },
+      undefined,
+      isDataSource,
+    );
+
+    if (deep && Array.isArray(node.items) && node.items.length) {
+      node.items.forEach((item) => {
+        this.enqueueTask(item, target, depExtendedData, deep, batch);
+      });
+    }
+  }
+
+  private beginBatchTask(batch: CollectBatch, isDataSource: boolean) {
+    batch.pending += 1;
+    if (isDataSource) {
+      batch.dsPending += 1;
+    }
+  }
+
+  private onBatchTaskDone(batch: CollectBatch, isDataSource: boolean) {
+    if (batch.aborted) return;
+
+    if (isDataSource) {
+      batch.dsPending -= 1;
+      // 数据源依赖收集完先 resolve，让 stage 尽快更新，其余依赖继续在后台收集
+      if (batch.dsPending === 0) {
+        this.settleBatchDs(batch);
+      }
+    }
+
+    batch.pending -= 1;
+    if (batch.pending === 0) {
+      this.finishBatch(batch);
+    }
+  }
+
+  private settleBatchDs(batch: CollectBatch) {
+    if (batch.dsSettled) return;
+    batch.dsSettled = true;
+    this.emit('ds-collected', batch.nodes, batch.deep);
+    batch.resolve(true);
+  }
+
+  private finishBatch(batch: CollectBatch) {
+    if (!batch.collectedEmitted) {
+      batch.collectedEmitted = true;
+      this.emit('collected', batch.nodes, batch.deep);
+    }
+    // 没有数据源任务的批次在此结算 Promise
+    this.settleBatchDs(batch);
+    this.activeBatches.delete(batch);
+    this.updateCollectingState();
+  }
+
+  /**
+   * idleTask 被清空时，在途批次的任务不会再执行，必须主动结算，
+   * 否则对应的 collectIdle Promise 永远不会 resolve（collecting 卡在 true、once 监听器泄漏）。
+   * 收集被中断（通常紧跟一次全量重新收集），因此不再 emit collected/ds-collected，仅结算 Promise。
+   */
+  private abortActiveBatches() {
+    if (!this.activeBatches.size) {
+      return;
+    }
+
+    const batches = [...this.activeBatches];
+    this.activeBatches.clear();
+
+    for (const batch of batches) {
+      // 标记中断：worker 结果可能在之后才返回，此时不能再写回依赖，也不能再结算批次
+      batch.aborted = true;
+      batch.resolve(false);
+    }
+
+    this.updateCollectingState();
+  }
+
+  private updateCollectingState() {
+    this.set('collecting', this.activeBatches.size > 0);
   }
 }
 

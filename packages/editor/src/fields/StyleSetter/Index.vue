@@ -1,0 +1,82 @@
+<template>
+  <TMagicCollapse class="m-fields-style-setter" v-model="collapseValue">
+    <template v-for="(item, index) in list" :key="index">
+      <TMagicCollapseItem :name="`${index}`">
+        <template #title>{{ item.title }}</template>
+        <component
+          v-if="item.component"
+          :is="item.component"
+          :values="model[name]"
+          :prop="prop || name"
+          :last-values="lastValues?.[name]"
+          :is-compare="isCompare"
+          :size="size"
+          :disabled="disabled"
+          @change="change"
+          @add-diff-count="onAddDiffCount"
+        ></component>
+      </TMagicCollapseItem>
+    </template>
+  </TMagicCollapse>
+</template>
+
+<script setup lang="ts">
+import { shallowRef } from 'vue';
+
+import { TMagicCollapse, TMagicCollapseItem } from '@tmagic/design';
+import type { ContainerChangeEventData, FieldProps } from '@tmagic/form';
+import type { StyleSchema } from '@tmagic/schema';
+
+import { Background, Border, Font, Layout, Position, Transform } from './pro/';
+
+defineOptions({
+  name: 'MFieldsStyleSetter',
+});
+
+defineProps<FieldProps<StyleSchema>>();
+
+const emit = defineEmits<{
+  change: [v: any, eventData: ContainerChangeEventData];
+  addDiffCount: [];
+}>();
+
+const list = [
+  {
+    name: 'font',
+    title: '布局',
+    component: Layout,
+  },
+  {
+    title: '位置',
+    component: Position,
+  },
+  {
+    title: '背景',
+    component: Background,
+  },
+  {
+    title: '文字',
+    component: Font,
+  },
+  {
+    title: '边框与圆角',
+    component: Border,
+  },
+  {
+    title: '变形',
+    component: Transform,
+  },
+];
+
+const collapseValue = shallowRef(
+  Array(list.length)
+    .fill(1)
+    .map((x, i) => `${i}`),
+);
+
+const change = (v: any, eventData: ContainerChangeEventData) => {
+  emit('change', v, eventData);
+};
+
+const onAddDiffCount = () => emit('addDiffCount');
+</script>

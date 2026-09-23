@@ -1,14 +1,26 @@
 import { reactive } from 'vue';
-import { cloneDeep } from 'lodash-es';
-import { Writable } from 'type-fest';
+import { cloneDeep, get } from 'lodash-es';
+import type { Writable } from 'type-fest';
 
-import type { EventOption } from '@tmagic/core';
+import type { DataSourceSchema, EventOption, Id, MNode, TargetOptions } from '@tmagic/core';
+import { Target, Watcher } from '@tmagic/core';
 import type { FormConfig } from '@tmagic/form';
-import type { DataSourceSchema } from '@tmagic/schema';
-import { guid, toLine } from '@tmagic/utils';
+import { getValueByKeyPath, guid, setValueByKeyPath, toLine } from '@tmagic/utils';
 
-import type { DatasourceTypeOption, SyncHookPlugin } from '@editor/type';
+import editorService from '@editor/services/editor';
+import historyService from '@editor/services/history';
+import storageService, { Protocol } from '@editor/services/storage';
+import type {
+  DataSourceStepValue,
+  DatasourceTypeOption,
+  DslOpWithHistoryIdsResult,
+  HistoryOpOptions,
+  HistoryOpOptionsWithChangeRecords,
+  SyncHookPlugin,
+} from '@editor/type';
 import { getFormConfig, getFormValue } from '@editor/utils/data-source';
+import { COPY_DS_STORAGE_KEY } from '@editor/utils/editor';
+import { createStackStep, describeRevertStep, getLastPushedHistoryIds } from '@editor/utils/history';
 
 import BaseService from './BaseService';
 
@@ -55,6 +67,13 @@ class DataSource extends BaseService {
     methods: {},
   });
 
+  /**
+   * 最近一次写入历史栈的数据源历史记录 uuid。
+   * 供 *AndGetHistoryId 系列方法在调用 add / update / remove 后取回本次产生的历史记录 id；
+   * 普通方法不读取它，调用前由 *AndGetHistoryId 重置为 null。
+   */
+  private lastPushedHistoryId: string | null = null;
+
   constructor() {
     super(canUsePluginMethods.sync.map((methodName) => ({ name: methodName, isAsync: false })));
   }
@@ -99,37 +118,244 @@ class DataSource extends BaseService {
     this.get('methods')[toLine(type)] = value;
   }
 
-  public add(config: DataSourceSchema) {
+  /**
+   * 新增数据源
+   * @param config 数据源配置
+   * @param options 可选配置
+   * @param options.doNotPushHistory 是否不写入历史记录（默认 false）
+   * @param options.historyDescription 入栈时附带的人类可读描述，用于历史面板展示
+   */
+  public add(
+    config: DataSourceSchema,
+    { doNotPushHistory = false, historyDescription, historySource }: HistoryOpOptions = {},
+  ) {
     const newConfig = {
       ...config,
-      id: this.createId(),
+      id: config.id && !this.getDataSourceById(config.id) ? config.id : this.createId(),
     };
 
     this.get('dataSources').push(newConfig);
 
+    if (!doNotPushHistory) {
+      const step = createStackStep<DataSourceSchema, DataSourceStepValue>(newConfig.id, {
+        oldValue: null,
+        newValue: newConfig,
+        historyDescription,
+        source: historySource,
+      });
+      this.lastPushedHistoryId = (step ? historyService.push('dataSource', step, newConfig.id) : null)?.uuid ?? null;
+    }
+
     this.emit('add', newConfig);
+    this.emit('change', this.get('dataSources'));
 
     return newConfig;
   }
 
-  public update(config: DataSourceSchema) {
+  /**
+   * 更新数据源
+   * @param config 数据源配置
+   * @param data 额外数据
+   * @param data.changeRecords form 端变更记录
+   * @param data.doNotPushHistory 是否不写入历史记录（默认 false）
+   * @param data.historyDescription 入栈时附带的人类可读描述，用于历史面板展示
+   */
+  public update(
+    config: DataSourceSchema,
+    {
+      changeRecords = [],
+      doNotPushHistory = false,
+      historyDescription,
+      historySource,
+    }: HistoryOpOptionsWithChangeRecords = {},
+  ) {
     const dataSources = this.get('dataSources');
 
     const index = dataSources.findIndex((ds) => ds.id === config.id);
 
-    dataSources[index] = cloneDeep(config);
+    const oldConfig = dataSources[index];
+    const newConfig = cloneDeep(config);
 
-    this.emit('update', config);
+    dataSources[index] = newConfig;
 
-    return config;
+    if (!doNotPushHistory) {
+      const step = createStackStep<DataSourceSchema, DataSourceStepValue>(newConfig.id, {
+        oldValue: oldConfig ? cloneDeep(oldConfig) : null,
+        newValue: newConfig,
+        changeRecords,
+        historyDescription,
+        source: historySource,
+      });
+      this.lastPushedHistoryId = (step ? historyService.push('dataSource', step, newConfig.id) : null)?.uuid ?? null;
+    }
+
+    this.emit('update', newConfig, {
+      oldConfig,
+      changeRecords,
+    });
+    this.emit('change', this.get('dataSources'));
+
+    return newConfig;
   }
 
-  public remove(id: string) {
+  /**
+   * 删除数据源
+   * @param id 数据源 id
+   * @param options 可选配置
+   * @param options.doNotPushHistory 是否不写入历史记录（默认 false）
+   * @param options.historyDescription 入栈时附带的人类可读描述，用于历史面板展示
+   */
+  public remove(id: string, { doNotPushHistory = false, historyDescription, historySource }: HistoryOpOptions = {}) {
     const dataSources = this.get('dataSources');
     const index = dataSources.findIndex((ds) => ds.id === id);
+    const oldConfig = index !== -1 ? dataSources[index] : null;
     dataSources.splice(index, 1);
 
+    if (oldConfig && !doNotPushHistory) {
+      const step = createStackStep<DataSourceSchema, DataSourceStepValue>(id, {
+        oldValue: cloneDeep(oldConfig),
+        newValue: null,
+        historyDescription,
+        source: historySource,
+      });
+      this.lastPushedHistoryId = (step ? historyService.push('dataSource', step, id) : null)?.uuid ?? null;
+    }
+
     this.emit('remove', id);
+    this.emit('change', this.get('dataSources'));
+  }
+
+  // #region AndGetHistoryId
+  /**
+   * 下列 *AndGetHistoryId 方法与对应的 add / update / remove 行为完全一致，
+   * 返回值在 {@link DslOpWithHistoryIdsResult} 中同时包含原操作结果与本次写入历史栈的 uuid 列表（{@link DataSourceStepValue.uuid}），
+   * 可用于精确引用 / 定位该条历史记录（埋点、revert、跨端同步等）。
+   *
+   * 当本次操作未写入历史（doNotPushHistory 为 true、或无对应记录）时 historyIds 为 `[]`。
+   */
+
+  /** 等价于 {@link add}，并额外返回本次写入历史记录的 uuid 列表（未入栈时 historyIds 为 `[]`）。 */
+  public addAndGetHistoryId(
+    config: DataSourceSchema,
+    options: HistoryOpOptions = {},
+  ): DslOpWithHistoryIdsResult<DataSourceSchema> {
+    this.lastPushedHistoryId = null;
+    const result = this.add(config, options);
+    return { result, historyIds: getLastPushedHistoryIds(this.lastPushedHistoryId) };
+  }
+
+  /** 等价于 {@link update}，并额外返回本次写入历史记录的 uuid 列表（未入栈时 historyIds 为 `[]`）。 */
+  public updateAndGetHistoryId(
+    config: DataSourceSchema,
+    options: HistoryOpOptionsWithChangeRecords = {},
+  ): DslOpWithHistoryIdsResult<DataSourceSchema> {
+    this.lastPushedHistoryId = null;
+    const result = this.update(config, options);
+    return { result, historyIds: getLastPushedHistoryIds(this.lastPushedHistoryId) };
+  }
+
+  /** 等价于 {@link remove}，并额外返回本次写入历史记录的 uuid 列表（未入栈时 historyIds 为 `[]`）。 */
+  public removeAndGetHistoryId(id: string, options: HistoryOpOptions = {}): DslOpWithHistoryIdsResult<void> {
+    this.lastPushedHistoryId = null;
+    this.remove(id, options);
+    return { result: undefined, historyIds: getLastPushedHistoryIds(this.lastPushedHistoryId) };
+  }
+  // #endregion AndGetHistoryId
+
+  /**
+   * 撤销指定数据源的最近一次变更。
+   *
+   * 内部走 add / update / remove，因此会自动触发 dataSourceService 的事件，
+   * 由 initService 中的对应 handler 重新收集 dep（DATA_SOURCE / DATA_SOURCE_COND / DATA_SOURCE_METHOD）。
+   * 所有写回都带 `doNotPushHistory: true`，避免在历史栈里产生新的记录。
+   *
+   * @param id 数据源 id
+   * @returns 撤销的 step；栈不存在或已无可撤销时返回 null
+   */
+  public undo(id: Id) {
+    const step = historyService.undo('dataSource', id);
+    if (!step) return null;
+    this.applyHistoryStep(step, true);
+    return step;
+  }
+
+  /**
+   * 重做指定数据源的下一次变更。
+   * @param id 数据源 id
+   * @returns 重做的 step；栈不存在或已无可重做时返回 null
+   */
+  public redo(id: Id) {
+    const step = historyService.redo('dataSource', id);
+    if (!step) return null;
+    this.applyHistoryStep(step, false);
+    return step;
+  }
+
+  /** 是否可对指定数据源撤销。 */
+  public canUndo(id: Id): boolean {
+    return historyService.canUndo('dataSource', id);
+  }
+
+  /** 是否可对指定数据源重做。 */
+  public canRedo(id: Id): boolean {
+    return historyService.canRedo('dataSource', id);
+  }
+
+  /**
+   * 跳转指定数据源的历史栈到目标游标。语义同 editor.gotoPageStep。
+   *
+   * @param id          数据源 id
+   * @param targetCursor 目标游标位置（已应用步骤数量）
+   * @returns 实际移动到的最终游标位置
+   */
+  public goto(id: Id, targetCursor: number): number {
+    let cursor = historyService.getCursor('dataSource', id);
+    const target = Math.max(0, targetCursor);
+    while (cursor > target) {
+      if (!this.undo(id)) break;
+      cursor -= 1;
+    }
+    while (cursor < target) {
+      if (!this.redo(id)) break;
+      cursor += 1;
+    }
+    return cursor;
+  }
+
+  /**
+   * 「回滚」指定数据源历史步骤（类 git revert 语义）：
+   * - 不动原始栈结构（不移动 cursor、不丢弃任何步骤）；
+   * - 把目标 step 的修改**反向应用**一次，并作为**新步骤**追加到栈顶；
+   * - 仅对已应用的步骤生效——未应用步骤本身就不存在于当前 schema 中，反向无意义。
+   *
+   * @param id    数据源 id
+   * @param index 目标 step 在该栈中的索引（0 为最早），通常由历史面板传入
+   * @returns 反向后产生的新 step；目标不存在 / 未应用时返回 null
+   */
+  public revert(id: Id, index: number): DataSourceStepValue | null {
+    const list = historyService.getStepList('dataSource', id);
+    const entry = list[index];
+    if (!entry?.applied) return null;
+    // 更新类步骤（前后 schema 都存在）必须带 changeRecords 才支持回滚，否则只能整 schema 替换，会冲掉后续无关变更。
+    const { oldSchema, newSchema, changeRecords } = entry.step.diff?.[0] ?? {};
+    if (oldSchema && newSchema && !changeRecords?.length) return null;
+    const description = `回滚 #${index + 1}: ${describeRevertStep<DataSourceSchema>(entry.step.data.id, entry.step.diff?.[0], (s) => s.title)}`;
+    return this.applyRevertStep(entry.step, description);
+  }
+
+  /**
+   * 通过历史记录 uuid 回滚数据源历史步骤，语义同 {@link revert}，
+   * 仅无需调用方再传 dataSourceId 与 index：内部会按 uuid 在全部数据源栈中定位对应步骤后再回滚。
+   * 按数组顺序依次回滚，返回与入参同序的结果列表（某项失败时为 `null`）。
+   *
+   * @param uuids 目标历史记录的 uuid 列表，通常由 {@link addAndGetHistoryId} 等方法返回的 `historyIds`
+   */
+  public revertById(uuids: string[]): (DataSourceStepValue | null)[] {
+    return uuids.map((uuid) => {
+      const location = historyService.findStepLocationByUuid('dataSource', uuid);
+      if (!location) return null;
+      return this.revert(location.id, location.index);
+    });
   }
 
   public createId(): string {
@@ -152,6 +378,172 @@ class DataSource extends BaseService {
 
   public usePlugin(options: SyncHookPlugin<SyncMethodName, DataSource>): void {
     super.usePlugin(options);
+  }
+
+  /**
+   * 复制时会带上组件关联的数据源
+   * @param config 组件节点配置
+   * @returns
+   */
+  public copyWithRelated(config: MNode | MNode[], collectorOptions?: TargetOptions): void {
+    const copyNodes: MNode[] = Array.isArray(config) ? config : [config];
+    const copyData: DataSourceSchema[] = [];
+
+    if (collectorOptions && typeof collectorOptions.isTarget === 'function') {
+      const customTarget = new Target({
+        ...collectorOptions,
+      });
+
+      const coperWatcher = new Watcher();
+
+      coperWatcher.addTarget(customTarget);
+
+      coperWatcher.collect(copyNodes, {}, true, collectorOptions.type);
+
+      Object.keys(customTarget.deps).forEach((nodeId: Id) => {
+        const node = editorService.getNodeById(nodeId);
+        if (!node) return;
+        customTarget!.deps[nodeId].keys.forEach((key) => {
+          const [relateDsId] = get(node, key);
+          const isExist = copyData.find((dsItem) => dsItem.id === relateDsId);
+          if (!isExist) {
+            const relateDs = this.getDataSourceById(relateDsId);
+            if (relateDs) {
+              copyData.push(relateDs);
+            }
+          }
+        });
+      });
+    }
+    storageService.setItem(COPY_DS_STORAGE_KEY, copyData, {
+      protocol: Protocol.OBJECT,
+    });
+  }
+  /**
+   * 粘贴数据源
+   * @returns
+   */
+  public paste() {
+    const dataSource: DataSourceSchema[] = storageService.getItem(COPY_DS_STORAGE_KEY);
+    dataSource.forEach((item: DataSourceSchema) => {
+      // 不覆盖同样id的数据源
+      if (!this.getDataSourceById(item.id)) {
+        this.add(item);
+      }
+    });
+  }
+
+  /**
+   * 反向应用一个 step 并以新 step 入栈（不带 doNotPushHistory）。逻辑与 applyHistoryStep(reverse=true)
+   * 同构，差异仅在于走对应的公共 add / update / remove 而不是带 doNotPushHistory 的版本。
+   */
+  private applyRevertStep(step: DataSourceStepValue, historyDescription: string): DataSourceStepValue | null {
+    const { id } = step.data;
+    const { oldSchema, newSchema, changeRecords } = step.diff?.[0] ?? {};
+
+    // 原本是新增 → revert 即删除
+    if (!oldSchema && newSchema) {
+      this.remove(`${id}`, { historyDescription, historySource: 'rollback' });
+      return historyService.getStepList('dataSource', id).slice(-1)[0]?.step ?? null;
+    }
+
+    // 原本是删除 → revert 即重新加回
+    if (oldSchema && !newSchema) {
+      this.add(cloneDeep(oldSchema), { historyDescription, historySource: 'rollback' });
+      return historyService.getStepList('dataSource', id).slice(-1)[0]?.step ?? null;
+    }
+
+    if (!oldSchema || !newSchema) return null;
+
+    // 原本是更新 → 把 oldSchema 写回；优先按 changeRecords 局部 patch
+    if (changeRecords?.length) {
+      const current = this.getDataSourceById(`${id}`);
+      if (!current) return null;
+      const patched = cloneDeep(current) as DataSourceSchema;
+      let fallbackToFullReplace = false;
+      for (const record of changeRecords) {
+        if (!record.propPath) {
+          fallbackToFullReplace = true;
+          break;
+        }
+        const value = cloneDeep(getValueByKeyPath(record.propPath, oldSchema));
+        setValueByKeyPath(record.propPath, value, patched);
+      }
+      this.update(fallbackToFullReplace ? cloneDeep(oldSchema) : patched, {
+        changeRecords,
+        historyDescription,
+        historySource: 'rollback',
+      });
+      return historyService.getStepList('dataSource', id).slice(-1)[0]?.step ?? null;
+    }
+
+    this.update(cloneDeep(oldSchema), { historyDescription, historySource: 'rollback' });
+    return historyService.getStepList('dataSource', id).slice(-1)[0]?.step ?? null;
+  }
+
+  /**
+   * 把一条历史 step 应用到当前数据源服务上。
+   *
+   * 复用现有的 add / update / remove，目的是借助它们发出的事件触发 initService 中
+   * 的依赖收集逻辑（DATA_SOURCE / DATA_SOURCE_COND / DATA_SOURCE_METHOD）。
+   * 所有写回都带 `doNotPushHistory: true`，确保不会在历史栈里产生新的记录。
+   *
+   * - oldSchema=null, newSchema≠null：原始为新增 → undo 删除；redo 再次 add
+   * - oldSchema≠null, newSchema=null：原始为删除 → undo 还原 add；redo 再次删除
+   * - 两侧都有：原始为更新 → 按 changeRecords 局部 patch；缺省退化为整 schema 替换
+   *
+   * @param step 历史 step
+   * @param reverse true=撤销，false=重做
+   */
+  private applyHistoryStep(step: DataSourceStepValue, reverse: boolean): void {
+    const { id } = step.data;
+    const { oldSchema, newSchema, changeRecords } = step.diff?.[0] ?? {};
+
+    // 新增 / 删除：直接 add 或 remove，不走 patch 逻辑
+    if (!oldSchema && newSchema) {
+      if (reverse) {
+        this.remove(`${id}`, { doNotPushHistory: true });
+      } else {
+        this.add(cloneDeep(newSchema), { doNotPushHistory: true });
+      }
+      return;
+    }
+
+    if (oldSchema && !newSchema) {
+      if (reverse) {
+        this.add(cloneDeep(oldSchema), { doNotPushHistory: true });
+      } else {
+        this.remove(`${id}`, { doNotPushHistory: true });
+      }
+      return;
+    }
+
+    if (!oldSchema || !newSchema) return;
+
+    // 更新场景：优先按 changeRecords 局部 patch；缺省退化为整 schema 替换
+    const sourceForValues = reverse ? oldSchema : newSchema;
+
+    if (changeRecords?.length) {
+      const current = this.getDataSourceById(`${id}`);
+      if (!current) return;
+      const patched = cloneDeep(current) as DataSourceSchema;
+      let fallbackToFullReplace = false;
+      for (const record of changeRecords) {
+        if (!record.propPath) {
+          fallbackToFullReplace = true;
+          break;
+        }
+        const value = cloneDeep(getValueByKeyPath(record.propPath, sourceForValues));
+        setValueByKeyPath(record.propPath, value, patched);
+      }
+      this.update(fallbackToFullReplace ? cloneDeep(sourceForValues) : patched, {
+        changeRecords,
+        doNotPushHistory: true,
+      });
+      return;
+    }
+
+    this.update(cloneDeep(sourceForValues), { doNotPushHistory: true });
   }
 }
 

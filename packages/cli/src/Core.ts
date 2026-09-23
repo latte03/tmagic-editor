@@ -1,9 +1,11 @@
-import path from 'path';
+import path from 'node:path';
 
 import fs from 'fs-extra';
 
+import { prepareEntryFile } from './utils/prepareEntryFile';
+import { resolveAppPackages } from './utils/resolveAppPackages';
+import { require } from './require';
 import { ModuleMainFilePath, UserConfig } from './types';
-import { prepareEntryFile, resolveAppPackages } from './utils';
 
 export default class Core {
   public version = require('../package.json').version;
@@ -11,11 +13,14 @@ export default class Core {
   public options: UserConfig;
 
   public moduleMainFilePath: ModuleMainFilePath = {
+    componentPackage: {},
     componentMap: {},
+    pluginPakcage: {},
     pluginMap: {},
     configMap: {},
     valueMap: {},
     eventMap: {},
+    datasourcePackage: {},
     datasourceMap: {},
     dsConfigMap: {},
     dsValueMap: {},

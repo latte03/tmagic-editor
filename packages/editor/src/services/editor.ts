@@ -1,7 +1,7 @@
 /*
  * Tencent is pleased to support the open source community by making TMagicEditor available.
  *
- * Copyright (C) 2023 THL A29 Limited, a Tencent company.  All rights reserved.
+ * Copyright (C) 2025 Tencent.  All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,74 +16,91 @@
  * limitations under the License.
  */
 
-import { reactive, toRaw } from 'vue';
-import { cloneDeep, get, isObject, mergeWith, uniq } from 'lodash-es';
-import { Writable } from 'type-fest';
+import { nextTick, reactive, toRaw } from 'vue';
+import { cloneDeep, isEmpty, isEqual, isObject, mergeWith, uniq } from 'lodash-es';
 
-import { DepTargetType } from '@tmagic/dep';
-import type { Id, MApp, MComponent, MContainer, MNode, MPage, MPageFragment } from '@tmagic/schema';
-import { NodeType } from '@tmagic/schema';
-import { getNodePath, isNumber, isPage, isPageFragment, isPop } from '@tmagic/utils';
+import type { Id, MApp, MContainer, MNode, MPage, MPageFragment, TargetOptions } from '@tmagic/core';
+import { NodeType } from '@tmagic/core';
+import type { ChangeRecord } from '@tmagic/form';
+import { isFixed } from '@tmagic/stage';
+import {
+  getNodeInfo,
+  getNodePath,
+  getValueByKeyPath,
+  guid,
+  isPage,
+  isPageFragment,
+  isPageOrFragment,
+  setValueByKeyPath,
+  traverseNode,
+} from '@tmagic/utils';
 
 import BaseService from '@editor/services//BaseService';
 import propsService from '@editor/services//props';
-import depService from '@editor/services/dep';
 import historyService from '@editor/services/history';
 import storageService, { Protocol } from '@editor/services/storage';
 import type {
   AddMNode,
   AsyncHookPlugin,
+  AsyncMethodName,
+  DslOpOptions,
+  DslOpWithHistoryIdsResult,
+  EditorEvents,
   EditorNodeInfo,
+  HistoryOpSource,
+  HistoryOpType,
+  NodeInvalidInfo,
+  NodeInvalidSource,
   PastePosition,
+  StepDiffItem,
   StepValue,
   StoreState,
   StoreStateKey,
+  UpdateOptions,
 } from '@editor/type';
-import { LayerOffset, Layout } from '@editor/type';
+import { canUsePluginMethods, LayerOffset, Layout } from '@editor/type';
 import {
-  change2Fixed,
+  calcAlignCenterStyle,
+  calcLayerTargetIndex,
+  calcMoveStyle,
+  classifyDragSources,
+  collectRelatedNodes,
   COPY_STORAGE_KEY,
-  Fixed2Other,
+  describeStepForRevert,
+  editorNodeMergeCustomizer,
   fixNodePosition,
   getInitPositionStyle,
   getNodeIndex,
   getPageFragmentList,
   getPageList,
-  isFixed,
+  moveItemsInContainer,
+  resolveSelectedNode,
   setChildrenLayout,
   setLayout,
+  toggleFixedPosition,
 } from '@editor/utils/editor';
+import { getLastPushedHistoryIds } from '@editor/utils/history';
 import { beforePaste, getAddParent } from '@editor/utils/operator';
 
-const canUsePluginMethods = {
-  async: [
-    'getLayout',
-    'highlight',
-    'select',
-    'multiSelect',
-    'doAdd',
-    'add',
-    'doRemove',
-    'remove',
-    'doUpdate',
-    'update',
-    'sort',
-    'copy',
-    'paste',
-    'doPaste',
-    'doAlignCenter',
-    'alignCenter',
-    'moveLayer',
-    'moveToContainer',
-    'dragTo',
-    'undo',
-    'redo',
-    'move',
-  ] as const,
-  sync: [],
-};
+type MoveItem = { node: MNode; parent: MContainer; pageForOp: { name: string; id: Id } | null };
 
-type AsyncMethodName = Writable<(typeof canUsePluginMethods)['async']>;
+/** 历史插回时把记录的下标收敛到 [0, length]，越界（含未记录）一律追加到末尾 */
+const clampIndex = (index: number | undefined, length: number): number =>
+  typeof index === 'number' && index >= 0 && index <= length ? index : length;
+
+/**
+ * 把「变更前后节点快照」列表归一成 update 类型的 {@link StepDiffItem} 列表，供 {@link StepValue.diff} 使用。
+ * `changeRecords` 来自 form 端的 propPath/value 列表，撤销/重做时只对这些 propPath 做局部更新；
+ * 缺省（未传 / 空数组）才退化为整节点替换。
+ */
+const buildUpdateDiff = (
+  items: { oldNode: MNode; newNode: MNode; changeRecords?: ChangeRecord[] }[],
+): StepDiffItem<MNode>[] =>
+  items.map(({ oldNode, newNode, changeRecords }) => ({
+    oldSchema: oldNode,
+    newSchema: newNode,
+    ...(changeRecords?.length ? { changeRecords } : {}),
+  }));
 
 class Editor extends BaseService {
   public state: StoreState = reactive({
@@ -96,11 +113,29 @@ class Editor extends BaseService {
     stageLoading: true,
     highlightNode: null,
     modifiedNodeIds: new Map(),
+    invalidNodeIds: new Map(),
     pageLength: 0,
     pageFragmentLength: 0,
     disabledMultiSelect: false,
+    alwaysMultiSelect: false,
   });
-  private isHistoryStateChange = false;
+  private selectionBeforeOp: Id[] | null = null;
+  /**
+   * 操作前的节点校验错误快照，与 selectionBeforeOp 同时在 captureSelectionBeforeOp 中捕获，
+   * 供 pushOpHistory 写入 step.extra.invalidNodeIdsBefore，用于撤销时还原到「操作前」的错误状态。
+   */
+  private invalidNodeIdsBeforeOp: Map<Id, NodeInvalidInfo> | null = null;
+  /**
+   * 最近一次 pushOpHistory 写入的历史记录 uuid。
+   * 供 *AndGetHistoryId 系列方法在调用普通操作后取回本次产生的历史记录 id；
+   * 普通操作不会读取它，调用前由 *AndGetHistoryId 重置为 null。
+   */
+  private lastPushedHistoryId: string | null = null;
+  /**
+   * 上一次 doAdd 的插入记忆：nodeId 为插入的节点，selectedId 为当时的选中节点。
+   * 仅在选中节点未变化时复用（连续 add / doNotSelect / 批量粘贴），选中变化后自动失效，无需手动清理。
+   */
+  private lastAdded: { selectedId: Id; nodeId: Id } | null = null;
 
   constructor() {
     super(
@@ -112,10 +147,15 @@ class Editor extends BaseService {
 
   /**
    * 设置当前指点节点配置
-   * @param name 'root' | 'page' | 'parent' | 'node' | 'highlightNode' | 'nodes' | 'stage' | 'modifiedNodeIds' | 'pageLength' | 'pageFragmentLength
+   * @param name 'root' | 'page' | 'parent' | 'node' | 'highlightNode' | 'nodes' | 'stage' | 'modifiedNodeIds' | 'invalidNodeIds' | 'pageLength' | 'pageFragmentLength
    * @param value MNode
+   * @param options.historySource 设置 root 时，本次变更写入历史记录的「操作来源」（仅 name === 'root' 时生效）
    */
-  public set<K extends StoreStateKey, T extends StoreState[K]>(name: K, value: T) {
+  public set<K extends StoreStateKey, T extends StoreState[K]>(
+    name: K,
+    value: T,
+    options: { historySource?: HistoryOpSource } = {},
+  ) {
     const preValue = this.state[name];
     this.state[name] = value;
 
@@ -134,19 +174,41 @@ class Editor extends BaseService {
         this.state.pageLength = getPageList(app).length || 0;
         this.state.pageFragmentLength = getPageFragmentList(app).length || 0;
         this.state.stageLoading = this.state.pageLength !== 0;
+
+        if (preValue && !isEmpty(preValue)) {
+          // 编辑期间再次整体设置 root（源码保存 / 外部重设 DSL / root 节点更新）：与上一次 root
+          // 做页面级 diff，按 update / add / remove 入栈，作为正常历史记录体现整体替换。
+          this.pushRootDiffHistory(preValue as MApp, app, options.historySource);
+        } else {
+          // 首次设置 root：仅当该页面 / 页面片尚无基线标记时，才写入「未修改的初始状态」基线。
+          // 配合「先恢复历史再 set root」：若基线已随历史恢复建立（恢复后已有基线），则此处不再
+          // 重复创建，set root 不额外产生记录，由恢复出的历史栈作为当前状态来源。
+          // 标记不进入撤销/重做栈，仅作为该页历史列表底部的初始基线展示。
+          app.items?.forEach((pageNode) => {
+            if (pageNode?.id !== undefined && !historyService.getMarker('page', pageNode.id)) {
+              historyService.setMarker('page', pageNode.id, {
+                name: pageNode.name,
+                source: options.historySource,
+              });
+            }
+          });
+        }
       } else {
         this.state.pageLength = 0;
         this.state.pageFragmentLength = 0;
         this.state.stageLoading = false;
       }
 
-      this.emit('root-change', value, preValue);
+      this.emit('root-change', value as StoreState['root'], preValue as StoreState['root'], options);
+
+      // 整体替换 DSL 后，清理不再存在于新 DSL 中的失效节点错误记录，避免残留误报。
+      this.pruneInvalidNodeIds();
     }
   }
 
   /**
    * 获取当前指点节点配置
-   * @param name  'root' | 'page' | 'parent' | 'node' | 'highlightNode' | 'nodes' | 'stage' | 'modifiedNodeIds' | 'pageLength' | 'pageFragmentLength'
+   * @param name  'root' | 'page' | 'parent' | 'node' | 'highlightNode' | 'nodes' | 'stage' | 'modifiedNodeIds' | 'invalidNodeIds' | 'pageLength' | 'pageFragmentLength'
    * @returns MNode
    */
   public get<K extends StoreStateKey>(name: K): StoreState[K] {
@@ -165,36 +227,30 @@ class Editor extends BaseService {
       root = toRaw(root);
     }
 
-    const info: EditorNodeInfo = {
-      node: null,
-      parent: null,
-      page: null,
-    };
-
-    if (!root) return info;
-
-    if (id === root.id) {
-      info.node = root;
-      return info;
+    if (!root) {
+      return { node: null, parent: null, page: null, path: [] };
     }
 
-    const path = getNodePath(id, root.items);
+    if (id === root.id) {
+      return { node: root, parent: null, page: null, path: [] };
+    }
 
-    if (!path.length) return info;
-
-    path.unshift(root);
-
-    info.node = path[path.length - 1] as MComponent;
-    info.parent = path[path.length - 2] as MContainer;
-
-    path.forEach((item) => {
-      if (isPage(item) || isPageFragment(item)) {
-        info.page = item as MPage | MPageFragment;
-        return;
+    // 大多数查找的目标都在当前页面内，优先在当前页面子树中查找以避免对整棵树做全量遍历。
+    // 注意：不能直接使用 state.page，它可能与当前 root 不同步（指向已脱离的旧页面对象），
+    // 因此仅借用其 id，再从当前 root 中取回真正的页面对象（页面均为 root 的直接子节点，数量很少）。
+    const pageIdStr = `${this.get('page')?.id || ''}`;
+    const currentPageNode = root.items?.find((item) => `${item.id}` === pageIdStr);
+    if (currentPageNode && `${id}` !== pageIdStr) {
+      // util 仅读取 root.id 与 root.items，按容器结构传入当前页面是安全的
+      const info = getNodeInfo(id, currentPageNode);
+      if (info.node) {
+        return info;
       }
-    });
+    }
 
-    return info;
+    // 回退：在完整 root 上查找；当前页面已搜索过，用 skip 跳过其子树避免重复遍历，
+    // 同时保留真实的 parent / page 引用（id 命中当前页面节点本身时会在跳过子树前先匹配到）
+    return getNodeInfo(id, root, currentPageNode);
   }
 
   /**
@@ -220,10 +276,26 @@ class Editor extends BaseService {
   }
 
   /**
+   * 判断给定节点是否位于非当前页面（即选中该节点将会引起当前页面切换）
+   * @param node 节点
+   * @returns true 表示该节点位于非当前页面
+   */
+  public isOnDifferentPage(node: MNode): boolean {
+    const currentPageId = this.get('page')?.id;
+    if (currentPageId === undefined || currentPageId === null) return false;
+    if (isPageOrFragment(node)) {
+      return `${node.id}` !== `${currentPageId}`;
+    }
+    const nodePage = this.getNodeInfo(node.id, false).page;
+    if (!nodePage) return false;
+    return `${nodePage.id}` !== `${currentPageId}`;
+  }
+
+  /**
    * 只有容器拥有布局
    */
   public async getLayout(parent: MNode, node?: MNode | null): Promise<Layout> {
-    if (node && typeof node !== 'function' && isFixed(node)) return Layout.FIXED;
+    if (node && isFixed(node.style || {})) return Layout.FIXED;
 
     if (parent.layout) {
       return parent.layout;
@@ -248,15 +320,9 @@ class Editor extends BaseService {
     this.set('page', page);
     this.set('parent', parent);
 
-    if (page) {
-      historyService.changePage(toRaw(page));
-    } else {
-      historyService.resetState();
-    }
-
     if (node?.id) {
       this.get('stage')
-        ?.renderer.runtime?.getApp?.()
+        ?.renderer?.runtime?.getApp?.()
         ?.page?.emit(
           'editor:select',
           {
@@ -348,7 +414,7 @@ class Editor extends BaseService {
     this.set('highlightNode', null);
   }
 
-  public async doAdd(node: MNode, parent: MContainer): Promise<MNode> {
+  public async doAdd(node: MNode, parent: MContainer, _options: DslOpOptions = {}): Promise<MNode> {
     const root = this.get('root');
 
     if (!root) throw new Error('root为空');
@@ -358,17 +424,20 @@ class Editor extends BaseService {
 
     if (!curNode) throw new Error('当前选中节点为空');
 
-    if ((parent.type === NodeType.ROOT || curNode?.type === NodeType.ROOT) && !(isPage(node) || isPageFragment(node))) {
+    if ((parent.type === NodeType.ROOT || curNode?.type === NodeType.ROOT) && !isPageOrFragment(node)) {
       throw new Error('app下不能添加组件');
     }
 
-    if (parent.id !== curNode.id && !(isPage(node) || isPageFragment(node))) {
-      const index = parent.items.indexOf(curNode);
-      parent.items?.splice(index + 1, 0, node);
-    } else {
-      // 新增节点添加到配置中
-      parent.items?.push(node);
-    }
+    // 连续 add 时接在上一个新增节点之后，否则接在当前选中节点之后；
+    // 锚点节点可能已不在 items 中（被删 / DSL 整体替换），回退到当前选中节点，都不在则追加到末尾
+    const anchorId = this.lastAdded?.selectedId === curNode.id ? this.lastAdded.nodeId : curNode.id;
+    const anchorIndex = isPageOrFragment(node)
+      ? -1
+      : Math.max(getNodeIndex(anchorId, parent), getNodeIndex(curNode.id, parent));
+    const insertIndex = anchorIndex < 0 ? parent.items.length : anchorIndex + 1;
+
+    parent.items.splice(insertIndex, 0, node);
+    this.lastAdded = { selectedId: curNode.id, nodeId: node.id };
 
     const layout = await this.getLayout(toRaw(parent), node as MNode);
     node.style = getInitPositionStyle(node.style, layout);
@@ -378,6 +447,7 @@ class Editor extends BaseService {
       parent: cloneDeep(parent),
       parentId: parent.id,
       root: cloneDeep(root),
+      index: insertIndex,
     });
 
     const newStyle = fixNodePosition(node, parent, stage);
@@ -396,9 +466,24 @@ class Editor extends BaseService {
    * 向指点容器添加组件节点
    * @param addConfig 将要添加的组件节点配置
    * @param parent 要添加到的容器组件节点配置，如果不设置，默认为当前选中的组件的父节点
+   * @param options 可选配置，见 {@link DslOpOptions}
    * @returns 添加后的节点
    */
-  public async add(addNode: AddMNode | MNode[], parent?: MContainer | null): Promise<MNode | MNode[]> {
+  public async add(
+    addNode: AddMNode | MNode[],
+    parent?: MContainer | null,
+    options: DslOpOptions = {},
+  ): Promise<MNode | MNode[]> {
+    this.captureSelectionBeforeOp();
+
+    const {
+      doNotSelect = false,
+      doNotSwitchPage = false,
+      doNotPushHistory = false,
+      historyDescription,
+      historySource,
+    } = options;
+
     const stage = this.get('stage');
 
     // 新增多个组件只存在于粘贴多个组件,粘贴的是一个完整的config,所以不再需要getPropsValue
@@ -413,46 +498,87 @@ class Editor extends BaseService {
       addNodes.push(...addNode);
     }
 
-    const newNodes = await Promise.all(
-      addNodes.map((node) => {
-        const root = this.get('root');
-        if ((isPage(node) || isPageFragment(node)) && root) {
-          return this.doAdd(node, root);
-        }
-        const parentNode = parent && typeof parent !== 'function' ? parent : getAddParent(node);
-        if (!parentNode) throw new Error('未找到父元素');
-        return this.doAdd(node, parentNode);
-      }),
-    );
+    // 必须串行：每个节点的插入位置依赖上一个已插入的节点，并行时插入顺序会受
+    // doAdd 前置耗时（如异步 beforeDoAdd 插件钩子）影响而错乱
+    const newNodes: MNode[] = [];
+    for (const node of addNodes) {
+      const root = this.get('root');
+      const parentNode = isPageOrFragment(node) && root ? root : (parent ?? getAddParent(node));
+      if (!parentNode) throw new Error('未找到父元素');
+      newNodes.push(await this.doAdd(node, parentNode, options));
+    }
 
     if (newNodes.length > 1) {
-      const newNodeIds = newNodes.map((node) => node.id);
-      // 触发选中样式
-      stage?.multiSelect(newNodeIds);
-      await this.multiSelect(newNodeIds);
+      // 多选时只要任一新增节点位于非当前页面，触发的 multiSelect 就会引起页面切换
+      const wouldSwitchPage = newNodes.some((n) => this.isOnDifferentPage(n));
+      if (!doNotSelect && !(doNotSwitchPage && wouldSwitchPage)) {
+        const newNodeIds = newNodes.map((node) => node.id);
+        // 触发选中样式
+        stage?.multiSelect(newNodeIds);
+        await this.multiSelect(newNodeIds);
+      }
     } else {
-      await this.select(newNodes[0]);
+      const wouldSwitchPage = this.isOnDifferentPage(newNodes[0]);
+      const skipSelect = doNotSelect || (doNotSwitchPage && wouldSwitchPage);
+
+      if (!skipSelect) {
+        await this.select(newNodes[0]);
+      }
 
       if (isPage(newNodes[0])) {
         this.state.pageLength += 1;
       } else if (isPageFragment(newNodes[0])) {
         this.state.pageFragmentLength += 1;
-      } else {
+      } else if (!skipSelect) {
         // 新增页面，这个时候页面还有渲染出来，此时select会出错，在runtime-ready的时候回去select
         stage?.select(newNodes[0].id);
       }
     }
 
-    if (!(isPage(newNodes[0]) || isPageFragment(newNodes[0]))) {
-      this.pushHistoryState();
+    if (!isPageOrFragment(newNodes[0])) {
+      const pageForOp = this.getNodeInfo(newNodes[0].id, false).page;
+      if (!doNotPushHistory) {
+        const parentId = (this.getParentById(newNodes[0].id, false) ?? this.get('root'))!.id;
+        this.pushOpHistory('add', {
+          diff: newNodes.map((n) => {
+            const p = this.getParentById(n.id, false) as MContainer;
+            const idx = p ? getNodeIndex(n.id, p) : -1;
+            return {
+              newSchema: cloneDeep(toRaw(n)),
+              parentId,
+              index: typeof idx === 'number' ? idx : -1,
+            };
+          }),
+          pageData: { name: pageForOp?.name || '', id: pageForOp!.id },
+          historyDescription,
+          source: historySource,
+        });
+      } else {
+        this.selectionBeforeOp = null;
+      }
     }
 
     this.emit('add', newNodes);
+    this.emit('change', {
+      type: 'add',
+      data: newNodes.map((node) => ({ node, page: this.getPageOfNode(node.id) })),
+      historySource,
+      doNotPushHistory,
+    });
+
+    // 页面 / 页面片新增不入历史栈（见上方 isPageOrFragment 分支），这里合并补发一次结构变更通知
+    const addedPages = newNodes.filter((node) => isPageOrFragment(node)) as (MPage | MPageFragment)[];
+    if (addedPages.length) {
+      historyService.notifyPageStructureChange({ add: addedPages, remove: [] });
+    }
 
     return Array.isArray(addNode) ? newNodes : newNodes[0];
   }
 
-  public async doRemove(node: MNode): Promise<void> {
+  public async doRemove(
+    node: MNode,
+    { doNotSelect = false, doNotSwitchPage = false }: DslOpOptions = {},
+  ): Promise<void> {
     const root = this.get('root');
     if (!root) throw new Error('root不能为空');
 
@@ -464,34 +590,63 @@ class Editor extends BaseService {
 
     if (typeof index !== 'number' || index === -1) throw new Error('找不要删除的节点');
 
-    parent.items?.splice(index, 1);
     const stage = this.get('stage');
-    stage?.remove({ id: node.id, parentId: parent.id, root: cloneDeep(root) });
+    const currentPage = this.get('page');
+    const isDeletingCurrentPage = isPageOrFragment(node) && !!currentPage && `${currentPage.id}` === `${node.id}`;
 
-    const selectDefault = async (pages: MNode[]) => {
-      if (pages[0]) {
-        await this.select(pages[0]);
-        stage?.select(pages[0].id);
-      } else {
-        this.selectRoot();
+    parent.items?.splice(index, 1);
 
-        historyService.resetPage();
-      }
-    };
+    // 始终清理已删除节点在 state 中的残留引用：
+    // - 即使后续会调用 select 覆盖，跳过这些调用（doNotSelect / doNotSwitchPage）时也不能让 state 持有已删除节点
+    const selectedNodes = this.get('nodes');
+    const removedSelectedIndex = selectedNodes.findIndex((n: MNode) => `${n.id}` === `${node.id}`);
+    if (removedSelectedIndex !== -1) {
+      const nextSelected = [...selectedNodes];
+      nextSelected.splice(removedSelectedIndex, 1);
+      this.set('nodes', nextSelected);
+    }
 
+    const removeData = { id: node.id, parentId: parent.id, root: cloneDeep(root) };
     const rootItems = root.items || [];
+    // 删非当前页时画布不应该变动，所以只有删的是当前页才重新选中
+    const shouldReselect = isDeletingCurrentPage && !doNotSelect && !doNotSwitchPage;
+    // 还有剩余页面才能切过去，否则退回选中 root
+    const shouldSwitchPage = shouldReselect && rootItems.length > 0;
 
-    if (isPage(node)) {
-      this.state.pageLength -= 1;
+    if (isPageOrFragment(node)) {
+      if (isPage(node)) {
+        this.state.pageLength -= 1;
+      } else {
+        this.state.pageFragmentLength -= 1;
+      }
 
-      await selectDefault(getPageList(root));
-    } else if (isPageFragment(node)) {
-      this.state.pageFragmentLength -= 1;
+      if (shouldSwitchPage) {
+        // runtime 收到页面删除时会销毁当前渲染的 page 实例，必须先把画布切到剩余页面再通知删除，
+        // 否则画布会被清空，且要等下一次 updatePageId 才能恢复。
+        // nextTick 用于等 Stage 的 page watch 把新页面 id 同步给 runtime。
+        await this.select(rootItems[0]);
+        stage?.select(rootItems[0].id);
+        await nextTick();
+        stage?.remove(removeData);
+      } else {
+        // page 置空会让 Workspace 卸载 Stage 并销毁 renderer，删除通知必须在卸载前发出，
+        // 且不能 await：runtime 未 ready 时 getRuntime 的监听会随 destroy 一起被移除，永远不会 resolve
+        stage?.remove(removeData);
 
-      await selectDefault(getPageFragmentList(root));
+        if (shouldReselect) {
+          // 页面已全部删完
+          this.selectRoot();
+        } else if (isDeletingCurrentPage) {
+          this.set('page', null);
+        }
+      }
     } else {
-      await this.select(parent);
-      stage?.select(parent.id);
+      stage?.remove(removeData);
+
+      if (!doNotSelect) {
+        await this.select(parent);
+        stage?.select(parent.id);
+      }
 
       this.addModifiedNodeId(parent.id);
     }
@@ -504,22 +659,73 @@ class Editor extends BaseService {
 
   /**
    * 删除组件
-   * @param {Object} node
+   * @param {Object} node 要删除的节点或节点集合
+   * @param options 可选配置
+   * @param options.doNotSelect 删除后是否不更新当前选中节点（默认 false，删除后会选中父节点或首个页面）
+   * @param options.doNotSwitchPage 删除后是否不切换当前页面（默认 false；删除页面 / 页面片段时为 true 会跳过自动切换到首个剩余页面）
+   * @param options.doNotPushHistory 是否不写入历史记录（默认 false）
    */
-  public async remove(nodeOrNodeList: MNode | MNode[]): Promise<void> {
+  public async remove(nodeOrNodeList: MNode | MNode[], options: DslOpOptions = {}): Promise<void> {
+    const { doNotPushHistory = false, historyDescription, historySource } = options;
+    this.captureSelectionBeforeOp();
+
     const nodes = Array.isArray(nodeOrNodeList) ? nodeOrNodeList : [nodeOrNodeList];
 
-    await Promise.all(nodes.map((node) => this.doRemove(node)));
+    // 删除后节点已从树中移除，无法再反查所属 page，这里在删除前先逐个捕获用于 `change` 事件
+    const changeItems = nodes.map((node) => ({ node, page: this.getPageOfNode(node.id) }));
 
-    if (!(isPage(nodes[0]) || isPageFragment(nodes[0]))) {
-      // 更新历史记录
-      this.pushHistoryState();
+    const removedItems: StepDiffItem<MNode>[] = [];
+    let pageForOp: { name: string; id: Id } | null = null;
+    if (!isPageOrFragment(nodes[0])) {
+      for (const n of nodes) {
+        const { parent, node: curNode, page } = this.getNodeInfo(n.id, false);
+        if (parent && curNode) {
+          if (!pageForOp && page) {
+            pageForOp = { name: page.name || '', id: page.id };
+          }
+          const idx = getNodeIndex(curNode.id, parent);
+          removedItems.push({
+            oldSchema: cloneDeep(toRaw(curNode)),
+            parentId: parent.id,
+            index: typeof idx === 'number' ? idx : -1,
+          });
+        }
+      }
+    }
+
+    await Promise.all(nodes.map((node) => this.doRemove(node, options)));
+
+    // 删除节点时同步清理其（含子树）的校验错误记录；置于 pushOpHistory 之前，使历史快照与本次删除对齐。
+    this.removeInvalidNodesBySubtree(nodes);
+
+    if (removedItems.length > 0 && pageForOp) {
+      if (!doNotPushHistory) {
+        this.pushOpHistory('remove', {
+          diff: removedItems,
+          pageData: pageForOp,
+          historyDescription,
+          source: historySource,
+        });
+      } else {
+        this.selectionBeforeOp = null;
+      }
     }
 
     this.emit('remove', nodes);
+    this.emit('change', { type: 'remove', data: changeItems, historySource, doNotPushHistory });
+
+    // 页面 / 页面片删除不入历史栈（见上方 isPageOrFragment 分支），这里合并补发一次结构变更通知
+    const removedPages = nodes.filter((node) => isPageOrFragment(node)) as (MPage | MPageFragment)[];
+    if (removedPages.length) {
+      historyService.notifyPageStructureChange({ add: [], remove: removedPages });
+    }
   }
 
-  public async doUpdate(config: MNode) {
+  public async doUpdate(
+    config: MNode,
+    data: UpdateOptions = {},
+  ): Promise<{ newNode: MNode; oldNode: MNode; changeRecords?: ChangeRecord[] }> {
+    const { changeRecords = [], historySource, replace = false } = data;
     const root = this.get('root');
     if (!root) throw new Error('root为空');
 
@@ -529,29 +735,26 @@ class Editor extends BaseService {
 
     if (!info.node) throw new Error(`获取不到id为${config.id}的节点`);
 
-    const node = cloneDeep(toRaw(info.node));
+    const node = toRaw(info.node);
 
-    let newConfig = await this.toggleFixedPosition(toRaw(config), node, root);
+    // replace=true 时跳过 toggleFixedPosition / mergeWith / setChildrenLayout，直接用传入配置整节点替换
+    let newConfig = replace
+      ? cloneDeep(toRaw(config))
+      : await toggleFixedPosition(toRaw(config), node, info.path, this.getLayout);
 
-    newConfig = mergeWith(cloneDeep(node), newConfig, (objValue, srcValue, key) => {
-      if (typeof srcValue === 'undefined' && Object.hasOwn(newConfig, key)) {
-        return '';
-      }
-
-      if (isObject(srcValue) && Array.isArray(objValue)) {
-        // 原来的配置是数组，新的配置是对象，则直接使用新的值
-        return srcValue;
-      }
-      if (Array.isArray(srcValue)) {
-        return srcValue;
-      }
-    });
+    if (!replace) {
+      newConfig = mergeWith(cloneDeep(node), newConfig, editorNodeMergeCustomizer);
+    }
 
     if (!newConfig.type) throw new Error('配置缺少type值');
 
     if (newConfig.type === NodeType.ROOT) {
-      this.set('root', newConfig as MApp);
-      return newConfig;
+      this.set('root', newConfig as MApp, { historySource });
+      return {
+        oldNode: node,
+        newNode: newConfig,
+        changeRecords,
+      };
     }
 
     const { parent } = info;
@@ -562,60 +765,126 @@ class Editor extends BaseService {
 
     if (!parentNodeItems || typeof index === 'undefined' || index === -1) throw new Error('更新的节点未找到');
 
-    const newLayout = await this.getLayout(newConfig);
-    const layout = await this.getLayout(node);
-    if (Array.isArray(newConfig.items) && newLayout !== layout) {
-      newConfig = setChildrenLayout(newConfig as MContainer, newLayout);
+    if (!replace) {
+      const newLayout = await this.getLayout(newConfig);
+      const layout = await this.getLayout(node);
+      if (Array.isArray(newConfig.items) && newLayout !== layout) {
+        newConfig = setChildrenLayout(newConfig as MContainer, newLayout);
+      }
     }
 
     parentNodeItems[index] = newConfig;
 
-    // 将update后的配置更新到nodes中
-    const nodes = this.get('nodes');
-    const targetIndex = nodes.findIndex((nodeItem: MNode) => `${nodeItem.id}` === `${newConfig.id}`);
-    nodes.splice(targetIndex, 1, newConfig);
-    this.set('nodes', [...nodes]);
+    // 当被更新节点正好在当前选中列表中时，必须同步引用，否则 state 会持有已被替换的旧节点
+    const selectedNodes = this.get('nodes');
+    const targetIndex = selectedNodes.findIndex((nodeItem: MNode) => `${nodeItem.id}` === `${newConfig.id}`);
+    if (targetIndex !== -1) {
+      selectedNodes.splice(targetIndex, 1, newConfig);
+      this.set('nodes', [...selectedNodes]);
+    }
 
-    this.get('stage')?.update({
-      config: cloneDeep(newConfig),
-      parentId: parent.id,
-      root: cloneDeep(root),
-    });
-
-    if (isPage(newConfig) || isPageFragment(newConfig)) {
-      this.set('page', newConfig as MPage | MPageFragment);
+    // 只有被更新节点正好是当前选中页面时才同步 state.page，避免「更新非当前页」误将编辑器切到该页
+    if (isPageOrFragment(newConfig)) {
+      const currentPage = this.get('page');
+      if (currentPage && `${currentPage.id}` === `${newConfig.id}`) {
+        this.set('page', newConfig as MPage | MPageFragment);
+      }
     }
 
     this.addModifiedNodeId(newConfig.id);
 
-    return newConfig;
+    return {
+      oldNode: node,
+      newNode: newConfig,
+      changeRecords,
+    };
   }
 
   /**
    * 更新节点
+   * update后会触发依赖收集，收集完后会掉stage.update方法
    * @param config 新的节点配置，配置中需要有id信息
+   * @param data 额外数据，见 {@link UpdateOptions}
    * @returns 更新后的节点配置
    */
-  public async update(config: MNode | MNode[]): Promise<MNode | MNode[]> {
+  public async update(config: MNode | MNode[], data: UpdateOptions = {}): Promise<MNode | MNode[]> {
+    this.captureSelectionBeforeOp();
+
+    const {
+      doNotPushHistory = false,
+      changeRecordList,
+      changeRecords,
+      historyDescription,
+      historySource,
+      invalidInfo,
+    } = data;
+
     const nodes = Array.isArray(config) ? config : [config];
 
-    const newNodes = await Promise.all(nodes.map((node) => this.doUpdate(node)));
+    // 多节点必须使用 changeRecordList 为每个节点提供独立的记录；
+    // 否则同一份 changeRecords 会被复用到每个节点上，nodeUpdateHandler / 历史回放都会按错误的 propPath 处理。
+    const updateData = await Promise.all(
+      nodes.map((node, index) => {
+        const recordsForNode = changeRecordList ? (changeRecordList[index] ?? []) : (changeRecords ?? []);
+        return this.doUpdate(node, { ...data, changeRecords: recordsForNode });
+      }),
+    );
 
-    if (newNodes[0]?.type !== NodeType.ROOT) {
-      this.pushHistoryState();
+    // 校验错误信息在 pushOpHistory 之前落库，保证历史快照包含本次变更对应的错误状态。
+    this.applyInvalidInfo(config, invalidInfo);
+
+    if (updateData[0].oldNode?.type !== NodeType.ROOT) {
+      const curNodes = this.get('nodes');
+      if (curNodes.length) {
+        if (!doNotPushHistory) {
+          const pageForOp = this.getNodeInfo(nodes[0].id, false).page;
+          this.pushOpHistory('update', {
+            // 每个节点单独保留自己的 changeRecords，便于撤销/重做时按 propPath 精细化更新；
+            // 没有 changeRecords 的（如内部 sort/moveLayer 等整节点替换操作）会退化为全节点替换。
+            diff: buildUpdateDiff(
+              updateData.map((d) => ({
+                oldNode: cloneDeep(d.oldNode),
+                newNode: cloneDeep(d.newNode),
+                changeRecords: d.changeRecords?.length ? cloneDeep(d.changeRecords) : undefined,
+              })),
+            ),
+            pageData: { name: pageForOp?.name || '', id: pageForOp!.id },
+            historyDescription,
+            source: historySource,
+          });
+        } else {
+          this.selectionBeforeOp = null;
+        }
+      }
     }
 
-    this.emit('update', newNodes);
-    return Array.isArray(config) ? newNodes : newNodes[0];
+    this.emit('update', updateData);
+    this.emit('change', {
+      type: 'update',
+      data: updateData.map((node) => ({ node, page: this.getPageOfNode(node.newNode.id) })),
+      historySource,
+      doNotPushHistory,
+    });
+    return Array.isArray(config) ? updateData.map((item) => item.newNode) : updateData[0].newNode;
   }
 
   /**
    * 将id为id1的组件移动到id为id2的组件位置上，例如：[1,2,3,4] -> sort(1,3) -> [2,1,3,4]
    * @param id1 组件ID
    * @param id2 组件ID
+   * @param options 可选配置
+   * @param options.doNotSelect 排序后是否不更新当前选中节点（默认 false）
+   * @param options.doNotSwitchPage 排序后是否不切换当前页面（排序只发生在同一父节点内，方法内为空操作；保留以与其它 DSL 操作 API 一致）
+   * @param options.doNotPushHistory 是否不写入历史记录（默认 false）
    * @returns void
    */
-  public async sort(id1: Id, id2: Id): Promise<void> {
+  public async sort(
+    id1: Id,
+    id2: Id,
+    { doNotSelect = false, doNotPushHistory = false, historySource }: DslOpOptions = {},
+  ): Promise<void> {
+    this.captureSelectionBeforeOp();
+
     const root = this.get('root');
     if (!root) throw new Error('root为空');
 
@@ -632,17 +901,16 @@ class Editor extends BaseService {
 
     parent.items.splice(index2, 0, ...parent.items.splice(index1, 1));
 
-    await this.update(parent);
-    await this.select(node);
+    await this.update(parent, { doNotPushHistory, historySource });
+    if (!doNotSelect) {
+      await this.select(node);
+    }
 
     this.get('stage')?.update({
       config: cloneDeep(node),
       parentId: parent.id,
       root: cloneDeep(root),
     });
-
-    this.addModifiedNodeId(parent.id);
-    this.pushHistoryState();
   }
 
   /**
@@ -661,31 +929,13 @@ class Editor extends BaseService {
    * @param config 组件节点配置
    * @returns
    */
-  public copyWithRelated(config: MNode | MNode[]): void {
+  public copyWithRelated(config: MNode | MNode[], collectorOptions?: TargetOptions): void {
     const copyNodes: MNode[] = Array.isArray(config) ? config : [config];
-    // 关联的组件也一并复制
-    depService.clearByType(DepTargetType.RELATED_COMP_WHEN_COPY);
-    depService.collect(copyNodes, true, DepTargetType.RELATED_COMP_WHEN_COPY);
-    const customTarget = depService.getTarget(
-      DepTargetType.RELATED_COMP_WHEN_COPY,
-      DepTargetType.RELATED_COMP_WHEN_COPY,
-    );
-    if (customTarget) {
-      Object.keys(customTarget.deps).forEach((nodeId: Id) => {
-        const node = this.getNodeById(nodeId);
-        if (!node) return;
-        customTarget!.deps[nodeId].keys.forEach((key) => {
-          const relateNodeId = get(node, key);
-          const isExist = copyNodes.find((node) => node.id === relateNodeId);
-          if (!isExist) {
-            const relateNode = this.getNodeById(relateNodeId);
-            if (relateNode) {
-              copyNodes.push(relateNode);
-            }
-          }
-        });
-      });
+
+    if (collectorOptions && typeof collectorOptions.isTarget === 'function') {
+      collectRelatedNodes(copyNodes, collectorOptions, (id) => this.getNodeById(id));
     }
+
     storageService.setItem(COPY_STORAGE_KEY, copyNodes, {
       protocol: Protocol.OBJECT,
     });
@@ -694,9 +944,24 @@ class Editor extends BaseService {
   /**
    * 从localStorage中获取节点，然后添加到当前容器中
    * @param position 粘贴的坐标
+   * @param collectorOptions 可选的依赖收集器配置
+   * @param options 可选配置
+   * @param options.doNotSelect 粘贴后是否不更新当前选中节点（默认 false）
+   * @param options.doNotSwitchPage 粘贴后是否不切换当前页面（默认 false；跨页粘贴时为 true 会跳过页面切换）
+   * @param options.doNotPushHistory 是否不写入历史记录（默认 false）
    * @returns 添加后的组件节点配置
    */
-  public async paste(position: PastePosition = {}): Promise<MNode | MNode[] | void> {
+  public async paste(
+    position: PastePosition = {},
+    collectorOptions?: TargetOptions,
+    {
+      doNotSelect = false,
+      doNotSwitchPage = false,
+      doNotPushHistory = false,
+      historyDescription,
+      historySource,
+    }: DslOpOptions = {},
+  ): Promise<MNode | MNode[] | void> {
     const config: MNode[] = storageService.getItem(COPY_STORAGE_KEY);
     if (!Array.isArray(config)) return;
 
@@ -711,64 +976,68 @@ class Editor extends BaseService {
       }
     }
     const pasteConfigs = await this.doPaste(config, position);
-    propsService.replaceRelateId(config, pasteConfigs);
-    return this.add(pasteConfigs, parent);
+
+    if (collectorOptions && typeof collectorOptions.isTarget === 'function') {
+      propsService.replaceRelateId(config, pasteConfigs, collectorOptions);
+    }
+
+    return this.add(pasteConfigs, parent, {
+      doNotSelect,
+      doNotSwitchPage,
+      doNotPushHistory,
+      historyDescription,
+      historySource,
+    });
   }
 
   public async doPaste(config: MNode[], position: PastePosition = {}): Promise<MNode[]> {
     propsService.clearRelateId();
-    const pasteConfigs = beforePaste(position, cloneDeep(config));
+    const doc = this.get('stage')?.renderer?.contentWindow?.document;
+    const pasteConfigs = beforePaste(position, cloneDeep(config), doc);
     return pasteConfigs;
   }
 
   public async doAlignCenter(config: MNode): Promise<MNode> {
     const parent = this.getParentById(config.id);
-
     if (!parent) throw new Error('找不到父节点');
 
     const node = cloneDeep(toRaw(config));
     const layout = await this.getLayout(parent, node);
-    if (layout === Layout.RELATIVE) {
-      return config;
-    }
+    const doc = this.get('stage')?.renderer?.contentWindow?.document;
+    const newStyle = calcAlignCenterStyle(node, parent, layout, doc);
 
-    if (!node.style) return config;
+    if (!newStyle) return config;
 
-    const stage = this.get('stage');
-    const doc = stage?.renderer.contentWindow?.document;
-
-    if (doc) {
-      const el = doc.getElementById(`${node.id}`);
-      const parentEl = layout === Layout.FIXED ? doc.body : el?.offsetParent;
-      if (parentEl && el) {
-        node.style.left = (parentEl.clientWidth - el.clientWidth) / 2;
-        node.style.right = '';
-      }
-    } else if (parent.style && isNumber(parent.style?.width) && isNumber(node.style?.width)) {
-      node.style.left = (parent.style.width - node.style.width) / 2;
-      node.style.right = '';
-    }
-
+    node.style = newStyle;
     return node;
   }
 
   /**
    * 将指点节点设置居中
    * @param config 组件节点配置
+   * @param options 可选配置
+   * @param options.doNotSelect 居中后是否不更新当前选中节点（默认 false）
+   * @param options.doNotSwitchPage 居中后是否不切换当前页面（居中只更新节点 style，方法内为空操作；保留以与其它 DSL 操作 API 一致）
+   * @param options.doNotPushHistory 是否不写入历史记录（默认 false）
    * @returns 当前组件节点配置
    */
-  public async alignCenter(config: MNode | MNode[]): Promise<MNode | MNode[]> {
+  public async alignCenter(
+    config: MNode | MNode[],
+    { doNotSelect = false, doNotPushHistory = false, historyDescription, historySource }: DslOpOptions = {},
+  ): Promise<MNode | MNode[]> {
     const nodes = Array.isArray(config) ? config : [config];
     const stage = this.get('stage');
 
     const newNodes = await Promise.all(nodes.map((node) => this.doAlignCenter(node)));
 
-    const newNode = await this.update(newNodes);
+    const newNode = await this.update(newNodes, { doNotPushHistory, historyDescription, historySource });
 
-    if (newNodes.length > 1) {
-      await stage?.multiSelect(newNodes.map((node) => node.id));
-    } else {
-      await stage?.select(newNodes[0].id);
+    if (!doNotSelect) {
+      if (newNodes.length > 1) {
+        await stage?.multiSelect(newNodes.map((node) => node.id));
+      } else {
+        await stage?.select(newNodes[0].id);
+      }
     }
 
     return newNode;
@@ -777,8 +1046,15 @@ class Editor extends BaseService {
   /**
    * 移动当前选中节点位置
    * @param offset 偏移量
+   * @param options 可选配置
+   * @param options.doNotPushHistory 是否不写入历史记录（默认 false）
    */
-  public async moveLayer(offset: number | LayerOffset): Promise<void> {
+  public async moveLayer(
+    offset: number | LayerOffset,
+    { doNotPushHistory = false, historyDescription, historySource }: DslOpOptions = {},
+  ): Promise<void> {
+    this.captureSelectionBeforeOp();
+
     const root = this.get('root');
     if (!root) throw new Error('root为空');
 
@@ -791,22 +1067,16 @@ class Editor extends BaseService {
     const brothers: MNode[] = parent.items || [];
     const index = brothers.findIndex((item) => `${item.id}` === `${node?.id}`);
 
-    // 流式布局与绝对定位布局操作的相反的
     const layout = await this.getLayout(parent, node);
     const isRelative = layout === Layout.RELATIVE;
-
-    let offsetIndex: number;
-    if (offset === LayerOffset.TOP) {
-      offsetIndex = isRelative ? 0 : brothers.length;
-    } else if (offset === LayerOffset.BOTTOM) {
-      offsetIndex = isRelative ? brothers.length : 0;
-    } else {
-      offsetIndex = index + (isRelative ? -offset : offset);
-    }
+    const offsetIndex = calcLayerTargetIndex(index, offset, brothers.length, isRelative);
 
     if ((offsetIndex > 0 && offsetIndex > brothers.length) || offsetIndex < 0) {
       return;
     }
+
+    const oldParent = cloneDeep(toRaw(parent));
+
     brothers.splice(index, 1);
     brothers.splice(offsetIndex, 0, node);
 
@@ -819,83 +1089,176 @@ class Editor extends BaseService {
     });
 
     this.addModifiedNodeId(parent.id);
-    this.pushHistoryState();
+    if (!doNotPushHistory) {
+      const pageForOp = this.getNodeInfo(node.id, false).page;
+      this.pushOpHistory(
+        'update',
+
+        {
+          diff: buildUpdateDiff([{ oldNode: oldParent, newNode: cloneDeep(toRaw(parent)) }]),
+          pageData: { name: pageForOp?.name || '', id: pageForOp!.id },
+          historyDescription,
+          source: historySource,
+        },
+      );
+    } else {
+      this.selectionBeforeOp = null;
+    }
 
     this.emit('move-layer', offset);
+    this.emit('change', {
+      type: 'move-layer',
+      data: [{ node, page: this.getPageOfNode(node.id) }],
+      offset,
+      historySource,
+      doNotPushHistory,
+    });
   }
 
   /**
-   * 移动到指定容器中
-   * @param config 需要移动的节点
+   * 移动一个或多个节点到指定容器中。
+   *
+   * 多选场景（config 是数组）只会产生一条历史记录，
+   * `updatedItems` 涵盖所有源父容器 + 目标容器的前后快照。
+   * 这避免了"多选移动到某容器"在历史栈里被切成 N 条记录。
+   *
+   * @param config 需要移动的节点（或节点数组，各项需带 id；style 等字段会与原节点合并）
    * @param targetId 容器ID
+   * @param options 可选配置
+   * @param options.doNotSelect 移动后是否不更新当前选中节点（默认 false）
+   * @param options.doNotSwitchPage 移动后是否不切换当前页面（默认 false；目标容器位于其它页面时为 true 会跳过自动选中以避免页面切换）
+   * @param options.doNotPushHistory 是否不写入历史记录（默认 false）
    */
-  public async moveToContainer(config: MNode, targetId: Id): Promise<MNode | undefined> {
-    const root = this.get('root');
-    const { node, parent } = this.getNodeInfo(config.id, false);
+  public async moveToContainer(
+    config: MNode | MNode[],
+    targetId: Id,
+    {
+      doNotSelect = false,
+      doNotSwitchPage = false,
+      doNotPushHistory = false,
+      historyDescription,
+      historySource,
+    }: DslOpOptions = {},
+  ): Promise<MNode | MNode[]> {
+    const isBatch = Array.isArray(config);
+    const configs = (isBatch ? config : [config]).filter((item) => !isPageOrFragment(item));
+
+    if (configs.length === 0) {
+      throw new Error('没有可移动的节点');
+    }
+
+    this.captureSelectionBeforeOp();
+
     const target = this.getNodeById(targetId, false) as MContainer;
 
-    const stage = this.get('stage');
-    if (root && node && parent && stage) {
-      const index = getNodeIndex(node.id, parent);
-      parent.items?.splice(index, 1);
-
-      await stage.remove({ id: node.id, parentId: parent.id, root: cloneDeep(root) });
-
-      const layout = await this.getLayout(target);
-
-      const newConfig = mergeWith(cloneDeep(node), config, (objValue, srcValue) => {
-        if (Array.isArray(srcValue)) {
-          return srcValue;
-        }
-      });
-      newConfig.style = getInitPositionStyle(newConfig.style, layout);
-
-      target.items.push(newConfig);
-
-      await stage.select(targetId);
-
-      const targetParent = this.getParentById(target.id);
-      await stage.update({ config: cloneDeep(target), parentId: targetParent?.id, root: cloneDeep(root) });
-
-      await this.select(newConfig);
-      stage.select(newConfig.id);
-
-      this.addModifiedNodeId(target.id);
-      this.addModifiedNodeId(parent.id);
-      this.pushHistoryState();
-
-      return newConfig;
+    if (!target) {
+      throw new Error('目标容器不存在');
     }
-  }
 
-  public async dragTo(config: MNode, targetParent: MContainer, targetIndex: number) {
-    if (!targetParent || !Array.isArray(targetParent.items)) return;
+    const root = this.get('root');
+    const stage = this.get('stage');
 
-    const { parent, node: curNode } = this.getNodeInfo(config.id, false);
-    if (!parent || !curNode) throw new Error('找不要删除的节点');
+    if (!root || !stage) {
+      throw new Error('root 或 stage为空');
+    }
 
-    const index = getNodeIndex(curNode.id, parent);
+    // 收集 (节点, 源父) 信息，过滤掉异常节点（找不到父或源父等于目标本身）
+    const moves: MoveItem[] = [];
+    for (const { id } of configs) {
+      const { node, parent, page } = this.getNodeInfo(id, false);
+      if (!node || !parent) continue;
+      moves.push({ node, parent, pageForOp: page ? { name: page.name || '', id: page.id } : null });
+    }
 
-    if (typeof index !== 'number' || index === -1) throw new Error('找不要删除的节点');
+    if (moves.length === 0) {
+      throw new Error('没有可移动的节点');
+    }
 
-    if (parent.id === targetParent.id) {
-      if (index === targetIndex) return;
-
-      if (index < targetIndex) {
-        targetIndex -= 1;
+    // 记录所有涉及的源父容器（按 id 去重）+ 目标容器的前置快照；同一父容器只快照一次。
+    const beforeSnapshots = new Map<Id, MNode>();
+    beforeSnapshots.set(target.id, cloneDeep(toRaw(target)));
+    for (const { parent } of moves) {
+      if (!beforeSnapshots.has(parent.id)) {
+        beforeSnapshots.set(parent.id, cloneDeep(toRaw(parent)));
       }
     }
 
-    const layout = await this.getLayout(parent);
-    const newLayout = await this.getLayout(targetParent);
+    let newConfigs: MNode[] = [];
 
-    if (newLayout !== layout) {
-      setLayout(config, newLayout);
+    const moveNodes = moves.map(({ node }) => node);
+    await this.remove(moveNodes, { doNotPushHistory: true, doNotSelect, doNotSwitchPage: true });
+
+    newConfigs = (await this.add(moveNodes, target, {
+      doNotPushHistory: true,
+      doNotSelect,
+      doNotSwitchPage,
+    })) as MNode[];
+
+    if (!doNotPushHistory) {
+      // 整批只入栈一条历史：updatedItems 包含所有源父容器 + 目标容器的前后快照（撤销/重做最小依赖）。
+      const updatedItems = Array.from(beforeSnapshots.entries()).map(([id, oldNode]) => ({
+        oldNode,
+        newNode: cloneDeep(toRaw(this.getNodeById(id, false))) as MNode,
+      }));
+      const historyPage = moves[0].pageForOp ?? { name: '', id: target.id };
+      this.pushOpHistory('update', {
+        diff: buildUpdateDiff(updatedItems),
+        pageData: historyPage,
+        historyDescription,
+        source: historySource,
+      });
+    } else {
+      this.selectionBeforeOp = null;
     }
 
-    parent.items?.splice(index, 1);
+    return isBatch ? newConfigs : newConfigs[0];
+  }
 
-    targetParent.items?.splice(targetIndex, 0, config);
+  public async dragTo(
+    config: MNode | MNode[],
+    targetParent: MContainer,
+    targetIndex: number,
+    { doNotPushHistory = false, historyDescription, historySource }: DslOpOptions = {},
+  ) {
+    this.captureSelectionBeforeOp();
+
+    if (!targetParent || !Array.isArray(targetParent.items)) return;
+
+    const configs = Array.isArray(config) ? config : [config];
+
+    const beforeSnapshots = new Map<string, MNode>();
+    for (const cfg of configs) {
+      const { parent } = this.getNodeInfo(cfg.id, false);
+      if (parent && !beforeSnapshots.has(`${parent.id}`)) {
+        beforeSnapshots.set(`${parent.id}`, cloneDeep(toRaw(parent)));
+      }
+    }
+    if (!beforeSnapshots.has(`${targetParent.id}`)) {
+      beforeSnapshots.set(`${targetParent.id}`, cloneDeep(toRaw(targetParent)));
+    }
+
+    const newLayout = await this.getLayout(targetParent);
+    const { sameParentIndices, crossParentConfigs, aborted } = classifyDragSources(configs, targetParent, (id, raw) =>
+      this.getNodeInfo(id, raw),
+    );
+    if (aborted) return;
+
+    for (const { config: crossConfig, parent } of crossParentConfigs) {
+      const layout = await this.getLayout(parent);
+      if (newLayout !== layout) {
+        setLayout(crossConfig, newLayout);
+      }
+      const index = getNodeIndex(crossConfig.id, parent);
+      parent.items?.splice(index, 1);
+      this.addModifiedNodeId(parent.id);
+    }
+
+    moveItemsInContainer(sameParentIndices, targetParent, targetIndex);
+
+    crossParentConfigs.forEach(({ config: crossConfig }, index) => {
+      targetParent.items?.splice(targetIndex + index, 0, crossConfig);
+      this.addModifiedNodeId(crossConfig.id);
+    });
 
     const page = this.get('page');
     const root = this.get('root');
@@ -909,79 +1272,311 @@ class Editor extends BaseService {
       });
     }
 
-    this.addModifiedNodeId(config.id);
-    this.addModifiedNodeId(parent.id);
+    const updatedItems: { oldNode: MNode; newNode: MNode }[] = [];
+    for (const oldNode of beforeSnapshots.values()) {
+      const newNode = this.getNodeById(oldNode.id, false);
+      if (newNode) {
+        updatedItems.push({ oldNode, newNode: cloneDeep(toRaw(newNode)) });
+      }
+    }
+    if (!doNotPushHistory) {
+      const pageForOp = this.getNodeInfo(configs[0].id, false).page;
+      this.pushOpHistory('update', {
+        diff: buildUpdateDiff(updatedItems),
+        pageData: { name: pageForOp?.name || '', id: pageForOp!.id },
+        historyDescription,
+        source: historySource,
+      });
+    } else {
+      this.selectionBeforeOp = null;
+    }
 
-    this.pushHistoryState();
-
-    this.emit('drag-to', { index, targetIndex, config, parent, targetParent });
+    this.emit('drag-to', { targetIndex, configs, targetParent });
+    this.emit('change', {
+      type: 'drag-to',
+      data: configs.map((node) => ({ node, page: this.getPageOfNode(node.id) })),
+      targetIndex,
+      targetParent,
+      historySource,
+      doNotPushHistory,
+    });
   }
+
+  // #region AndGetHistoryId
+  /**
+   * 下列 *AndGetHistoryId 方法与对应的普通操作（add / remove / update ...）行为完全一致，
+   * 返回值在 {@link DslOpWithHistoryIdsResult} 中同时包含原操作结果与本次写入历史栈的 uuid 列表（{@link StepValue.uuid}），
+   * 可用于精确引用 / 定位该条历史记录（埋点、revert、跨端同步等）。
+   *
+   * 当本次操作未写入历史（doNotPushHistory 为 true、或操作无实际变更 / 提前返回）时 historyIds 为 `[]`。
+   */
+
+  /** 等价于 {@link add}，并额外返回本次写入历史记录的 uuid 列表（未入栈时 historyIds 为 `[]`）。 */
+  public async addAndGetHistoryId(
+    addNode: AddMNode | MNode[],
+    parent?: MContainer | null,
+    options: DslOpOptions = {},
+  ): Promise<DslOpWithHistoryIdsResult<MNode | MNode[]>> {
+    this.lastPushedHistoryId = null;
+    const result = await this.add(addNode, parent, options);
+    return { result, historyIds: getLastPushedHistoryIds(this.lastPushedHistoryId) };
+  }
+
+  /** 等价于 {@link remove}，并额外返回本次写入历史记录的 uuid 列表（未入栈时 historyIds 为 `[]`）。 */
+  public async removeAndGetHistoryId(
+    nodeOrNodeList: MNode | MNode[],
+    options: DslOpOptions = {},
+  ): Promise<DslOpWithHistoryIdsResult<void>> {
+    this.lastPushedHistoryId = null;
+    await this.remove(nodeOrNodeList, options);
+    return { result: undefined, historyIds: getLastPushedHistoryIds(this.lastPushedHistoryId) };
+  }
+
+  /** 等价于 {@link update}，并额外返回本次写入历史记录的 uuid 列表（未入栈时 historyIds 为 `[]`）。 */
+  public async updateAndGetHistoryId(
+    config: MNode | MNode[],
+    data: UpdateOptions = {},
+  ): Promise<DslOpWithHistoryIdsResult<MNode | MNode[]>> {
+    this.lastPushedHistoryId = null;
+    const result = await this.update(config, data);
+    return { result, historyIds: getLastPushedHistoryIds(this.lastPushedHistoryId) };
+  }
+
+  /** 等价于 {@link moveLayer}，并额外返回本次写入历史记录的 uuid 列表（未入栈时 historyIds 为 `[]`）。 */
+  public async moveLayerAndGetHistoryId(
+    offset: number | LayerOffset,
+    options: DslOpOptions = {},
+  ): Promise<DslOpWithHistoryIdsResult<void>> {
+    this.lastPushedHistoryId = null;
+    await this.moveLayer(offset, options);
+    return { result: undefined, historyIds: getLastPushedHistoryIds(this.lastPushedHistoryId) };
+  }
+
+  /** 等价于 {@link moveToContainer}，并额外返回本次写入历史记录的 uuid 列表（未入栈时 historyIds 为 `[]`）。 */
+  public async moveToContainerAndGetHistoryId(
+    config: MNode | MNode[],
+    targetId: Id,
+    options: DslOpOptions = {},
+  ): Promise<DslOpWithHistoryIdsResult<MNode | MNode[]>> {
+    this.lastPushedHistoryId = null;
+    const result = await this.moveToContainer(config, targetId, options);
+    return { result, historyIds: getLastPushedHistoryIds(this.lastPushedHistoryId) };
+  }
+
+  /** 等价于 {@link dragTo}，并额外返回本次写入历史记录的 uuid 列表（未入栈时 historyIds 为 `[]`）。 */
+  public async dragToAndGetHistoryId(
+    config: MNode | MNode[],
+    targetParent: MContainer,
+    targetIndex: number,
+    options: DslOpOptions = {},
+  ): Promise<DslOpWithHistoryIdsResult<void>> {
+    this.lastPushedHistoryId = null;
+    await this.dragTo(config, targetParent, targetIndex, options);
+    return { result: undefined, historyIds: getLastPushedHistoryIds(this.lastPushedHistoryId) };
+  }
+  // #endregion AndGetHistoryId
 
   /**
    * 撤销当前操作
-   * @returns 上一次数据
+   * @returns 被撤销的操作
    */
   public async undo(): Promise<StepValue | null> {
-    const value = historyService.undo();
-    await this.changeHistoryState(value);
+    const pageId = this.get('page')?.id;
+    if (pageId === undefined) return null;
+    const value = historyService.undo('page', pageId);
+    if (value) {
+      await this.applyHistoryOp(value, true);
+    }
     return value;
   }
 
   /**
    * 恢复到下一步
-   * @returns 下一步数据
+   * @returns 被恢复的操作
    */
   public async redo(): Promise<StepValue | null> {
-    const value = historyService.redo();
-    await this.changeHistoryState(value);
+    const pageId = this.get('page')?.id;
+    if (pageId === undefined) return null;
+    const value = historyService.redo('page', pageId);
+    if (value) {
+      await this.applyHistoryOp(value, false);
+    }
     return value;
   }
 
-  public async move(left: number, top: number) {
+  /**
+   * 「回滚」指定页面历史步骤（类 git revert 语义）：
+   * - 不动原始历史栈结构（不移动 cursor、不丢弃任何步骤）；
+   * - 取出 `index` 对应的 step，**反向应用**一次（add→remove / remove→add / update→旧值）；
+   * - 把这次反向应用作为一条**新步骤**追加到栈顶，可被普通 undo / redo。
+   *
+   * 与 `gotoPageStep`（类 git reset）的区别在于此操作**不丢弃**目标之后的历史。
+   * 与 `applyHistoryOp(reverse=true)` 的区别在于：本方法**不带** `doNotPushHistory`，
+   * 反向应用会以一条新 step 入栈；并且不实施 step 中保存的选区与 modifiedNodeIds 状态，
+   * 选区由用户当前位置决定，符合"新提交"语义。
+   *
+   * 仅对处于「已应用」状态的步骤生效——未应用的步骤本身就不存在于当前 DSL 中，反向无意义。
+   *
+   * @param index 目标 step 在所属页面栈中的索引（0 为最早），通常由历史面板传入
+   * @returns 反向后产生的新 step；目标不存在 / 未应用 / 反向失败时返回 null
+   */
+  public async revertPageStep(index: number): Promise<StepValue | null> {
+    const list = historyService.getStepList('page', this.get('page')?.id);
+    const entry = list[index];
+    if (!entry?.applied) return null;
+
+    const { step } = entry;
+    // 初始基线（index 0 的 initial step）是栈底线，不可回滚。
+    if (step.opType === 'initial') return null;
+    const root = this.get('root');
+    if (!root) return null;
+
+    // 更新类步骤必须带 changeRecords 才支持回滚：缺失时只能整节点替换，会冲掉后续无关变更，故不支持。
+    if (step.opType === 'update') {
+      const items = step.diff ?? [];
+      if (!items.length || !items.every((item) => item.changeRecords?.length)) return null;
+    }
+
+    // 反向应用产生的新 step 由内部 pushOpHistory 触发 history `change` 事件，监听一次以拿到引用。
+    let revertedStep: StepValue | null = null;
+    // page 的 `change` 事件回调签名为 `(pageId, step)`，这里只关心被回滚产生的新 step。
+    const captureRevert = (_pageId: Id, s: StepValue) => {
+      revertedStep = s;
+    };
+    historyService.once('change', captureRevert);
+
+    const historyDescription = `回滚 #${index + 1}: ${describeStepForRevert(step)}`;
+    // revert 走 public add/remove/update，让操作以一条普通新 step 入栈；不要切换选区与页面，避免打断用户。
+    const opts = { doNotSelect: true, doNotSwitchPage: true, historyDescription, historySource: 'rollback' } as const;
+
+    try {
+      switch (step.opType) {
+        case 'add': {
+          // 原本是新增 → revert 即删除当时被加入的节点
+          for (const { newSchema } of step.diff ?? []) {
+            if (!newSchema) continue;
+            const existing = this.getNodeById(newSchema.id, false);
+            if (existing) {
+              await this.remove(existing, opts);
+            }
+          }
+          break;
+        }
+        case 'remove': {
+          // 原本是删除 → revert 即把节点按原父容器加回来。
+          // 按原 index 升序逐个插回，先小后大避免索引漂移。
+          const items = step.diff ?? [];
+          const sorted = [...items].sort((a, b) => (a.index ?? 0) - (b.index ?? 0));
+          for (const { oldSchema, parentId } of sorted) {
+            if (!oldSchema || parentId === undefined) continue;
+            const parent = this.getNodeById(parentId, false) as MContainer | null;
+            if (parent) {
+              await this.add([cloneDeep(oldSchema)] as MNode[], parent, opts);
+            }
+          }
+          break;
+        }
+        case 'update': {
+          // 原本是更新 → revert 即把 oldSchema 的值写回；
+          // 优先按 changeRecords 局部 patch（仅触达 propPath 下的字段，避免冲掉同节点上其它无关变更）。
+          const items = step.diff ?? [];
+          const configs = items
+            .filter((item) => item.oldSchema && item.newSchema)
+            .map(({ oldSchema, newSchema, changeRecords }) => {
+              const oldNode = oldSchema!;
+              const newNode = newSchema!;
+              if (changeRecords?.length) {
+                const patch: MNode = { id: newNode.id, type: newNode.type };
+                for (const record of changeRecords) {
+                  if (!record.propPath) {
+                    // 没有 propPath 视为整节点替换
+                    return cloneDeep(oldNode);
+                  }
+                  const value = cloneDeep(getValueByKeyPath(record.propPath, oldNode));
+                  setValueByKeyPath(record.propPath, value, patch);
+                }
+                return patch;
+              }
+              return cloneDeep(oldNode);
+            });
+          if (configs.length) {
+            await this.update(configs, { historyDescription, historySource: 'rollback' });
+          }
+          break;
+        }
+      }
+    } finally {
+      historyService.off('change', captureRevert);
+    }
+
+    // 通知一次 history-change，让上层（如属性面板）按当前最新 DSL 刷新
+    const page = toRaw(this.get('page'));
+    if (page) {
+      this.emit('history-change', page as MPage | MPageFragment);
+    }
+
+    return revertedStep;
+  }
+
+  /**
+   * 通过历史记录 uuid 回滚当前页面的历史步骤，语义与 {@link revertPageStep} 完全一致，
+   * 仅入参从 index 改为 uuid 列表（{@link StepValue.uuid}）。按数组顺序依次回滚，
+   * 返回与入参同序的结果列表（某项失败时为 `null`）。
+   *
+   * @param uuids 目标历史记录的 uuid 列表，通常由 *AndGetHistoryId 方法返回的 `historyIds`
+   */
+  public async revertPageStepById(uuids: string[]): Promise<(StepValue | null)[]> {
+    const results: (StepValue | null)[] = [];
+    const pageId = this.get('page')?.id;
+    for (const uuid of uuids) {
+      const location = historyService.findStepLocationByUuid('page', uuid, pageId);
+      results.push(!location ? null : await this.revertPageStep(location.index));
+    }
+    return results;
+  }
+
+  /**
+   * 跳转当前页面历史栈到指定游标位置。
+   *
+   * `targetCursor` 与 `UndoRedo.getCursor()` 同义：表示"已应用步骤数量"，
+   * 取值范围 `[0, length]`。当目标 < 当前游标时循环 undo，否则循环 redo。
+   * 通常由历史面板传入「点击的 step.index + 1」作为目标。
+   *
+   * @returns 实际移动到的最终游标位置
+   */
+  public async gotoPageStep(targetCursor: number): Promise<number> {
+    const pageId = this.get('page')?.id;
+    let cursor = historyService.getCursor('page', pageId);
+    const { length } = historyService.getStepList('page', pageId);
+    const target = Math.max(0, Math.min(targetCursor, length));
+    while (cursor > target) {
+      const step = await this.undo();
+      if (!step) break;
+      cursor -= 1;
+    }
+    while (cursor < target) {
+      const step = await this.redo();
+      if (!step) break;
+      cursor += 1;
+    }
+    return cursor;
+  }
+
+  public async move(
+    left: number,
+    top: number,
+    { doNotPushHistory = false, historyDescription, historySource }: DslOpOptions = {},
+  ) {
     const node = toRaw(this.get('node'));
     if (!node || isPage(node)) return;
 
-    const { style, id, type } = node;
-    if (!style || !['absolute', 'fixed'].includes(style.position)) return;
+    const newStyle = calcMoveStyle(node.style || {}, left, top);
+    if (!newStyle) return;
 
-    const update = (style: { [key: string]: any }) =>
-      this.update({
-        id,
-        type,
-        style,
-      });
-
-    if (top) {
-      if (isNumber(style.top)) {
-        update({
-          ...style,
-          top: Number(style.top) + Number(top),
-          bottom: '',
-        });
-      } else if (isNumber(style.bottom)) {
-        update({
-          ...style,
-          bottom: Number(style.bottom) - Number(top),
-          top: '',
-        });
-      }
-    }
-
-    if (left) {
-      if (isNumber(style.left)) {
-        update({
-          ...style,
-          left: Number(style.left) + Number(left),
-          right: '',
-        });
-      } else if (isNumber(style.right)) {
-        update({
-          ...style,
-          right: Number(style.right) - Number(left),
-          left: '',
-        });
-      }
-    }
+    await this.update(
+      { id: node.id, type: node.type, style: newStyle },
+      { doNotPushHistory, historyDescription, historySource },
+    );
   }
 
   public resetState() {
@@ -993,6 +1588,7 @@ class Editor extends BaseService {
     this.set('stage', null);
     this.set('highlightNode', null);
     this.set('modifiedNodeIds', new Map());
+    this.set('invalidNodeIds', new Map());
     this.set('pageLength', 0);
   }
 
@@ -1006,79 +1602,492 @@ class Editor extends BaseService {
     this.get('modifiedNodeIds').clear();
   }
 
+  /**
+   * 记录（或覆盖）某个节点在指定来源（属性表单 / 样式表单）上的校验错误信息。
+   * @param id 节点 id
+   * @param source 错误来源：'props'（属性表单）| 'style'（样式表单）
+   * @param message 错误文案（可能是包含 <br> 的 HTML）
+   */
+  public setInvalidNode(id: Id, source: NodeInvalidSource, message: string) {
+    const map = this.get('invalidNodeIds');
+    const info: NodeInvalidInfo = { ...(map.get(id) || {}) };
+    info[source] = message;
+    map.set(id, info);
+    this.emit('invalid-node-change', map);
+  }
+
+  /**
+   * 删除节点的校验错误记录。
+   * @param id 节点 id
+   * @param source 指定来源则仅删除该来源；不传则删除该节点全部来源的错误
+   */
+  public deleteInvalidNode(id: Id, source?: NodeInvalidSource) {
+    const map = this.get('invalidNodeIds');
+    if (!map.has(id)) return;
+
+    if (!source) {
+      map.delete(id);
+    } else {
+      const info: NodeInvalidInfo = { ...(map.get(id) || {}) };
+      delete info[source];
+      if (info.props || info.style) {
+        map.set(id, info);
+      } else {
+        map.delete(id);
+      }
+    }
+
+    this.emit('invalid-node-change', map);
+  }
+
+  /** 获取当前存在校验错误的节点错误 Map（key 为节点 id） */
+  public getInvalidNodeIds(): Map<Id, NodeInvalidInfo> {
+    return this.get('invalidNodeIds');
+  }
+
+  /** 获取指定节点的校验错误信息 */
+  public getInvalidNodeInfo(id: Id): NodeInvalidInfo | undefined {
+    return this.get('invalidNodeIds').get(id);
+  }
+
+  /** 清空全部校验错误记录 */
+  public resetInvalidNodeId() {
+    const map = this.get('invalidNodeIds');
+    if (map.size === 0) return;
+    map.clear();
+    this.emit('invalid-node-change', map);
+  }
+
   public usePlugin(options: AsyncHookPlugin<AsyncMethodName, Editor>): void {
     super.usePlugin(options);
   }
 
-  private addModifiedNodeId(id: Id) {
-    if (!this.isHistoryStateChange) {
-      this.get('modifiedNodeIds').set(id, id);
+  public on<Name extends keyof EditorEvents, Param extends EditorEvents[Name]>(
+    eventName: Name,
+    listener: (...args: Param) => void | Promise<void>,
+  ) {
+    return super.on(eventName, listener as any);
+  }
+
+  public once<Name extends keyof EditorEvents, Param extends EditorEvents[Name]>(
+    eventName: Name,
+    listener: (...args: Param) => void | Promise<void>,
+  ) {
+    return super.once(eventName, listener as any);
+  }
+
+  public emit<Name extends keyof EditorEvents, Param extends EditorEvents[Name]>(eventName: Name, ...args: Param) {
+    return super.emit(eventName, ...args);
+  }
+
+  /**
+   * 应用一次属性面板提交携带的校验错误信息（在写入历史记录之前调用，使历史快照与本次变更对齐）。
+   * - invalidInfo 为空（调用方未携带）：认为本次更新对应的节点已无校验错误，清除其全部来源的错误；
+   * - error 非空则记录错误，为空则清除对应来源的错误。
+   */
+  private applyInvalidInfo(
+    config: MNode | MNode[],
+    invalidInfo?: { id: Id; source: NodeInvalidSource; error?: string },
+  ) {
+    if (!invalidInfo) {
+      // 调用方未携带 invalidInfo：本次更新对应节点不应再保留校验错误，清除其全部来源。
+      const ids = (Array.isArray(config) ? config : [config])
+        .map((node) => node.id)
+        .filter((id): id is Id => id !== undefined);
+      ids.forEach((id) => this.deleteInvalidNode(id));
+      return;
+    }
+    const { id, source, error } = invalidInfo;
+    if (error) {
+      this.setInvalidNode(id, source, error);
+    } else {
+      this.deleteInvalidNode(id, source);
     }
   }
 
-  private pushHistoryState() {
-    const curNode = cloneDeep(toRaw(this.get('node')));
-    const page = this.get('page');
-    if (!this.isHistoryStateChange && curNode && page) {
-      historyService.push({
-        data: cloneDeep(toRaw(page)),
-        modifiedNodeIds: this.get('modifiedNodeIds'),
-        nodeId: curNode.id,
+  /** 删除被移除节点（含其子树）的校验错误记录，避免残留误报 */
+  private removeInvalidNodesBySubtree(nodes: MNode[]) {
+    const map = this.get('invalidNodeIds');
+    if (map.size === 0) return;
+
+    let changed = false;
+    nodes.forEach((node) => {
+      traverseNode(node, (n) => {
+        if (n.id !== undefined && map.delete(n.id)) {
+          changed = true;
+        }
       });
+    });
+
+    if (changed) {
+      this.emit('invalid-node-change', map);
     }
-    this.isHistoryStateChange = false;
   }
 
-  private async changeHistoryState(value: StepValue | null) {
-    if (!value) return;
+  /** 清理不在当前 DSL 中的失效节点错误记录（用于整体替换 root 后） */
+  private pruneInvalidNodeIds() {
+    const map = this.get('invalidNodeIds');
+    if (map.size === 0) return;
 
-    this.isHistoryStateChange = true;
-    await this.update(value.data);
-    this.set('modifiedNodeIds', value.modifiedNodeIds);
-    setTimeout(async () => {
-      if (!value.nodeId) return;
-      await this.select(value.nodeId);
-      this.get('stage')?.select(value.nodeId);
-    }, 0);
-    this.emit('history-change', value.data);
-  }
-
-  private async toggleFixedPosition(dist: MNode, src: MNode, root: MApp) {
-    const newConfig = cloneDeep(dist);
-
-    if (!isPop(src) && newConfig.style?.position) {
-      if (isFixed(newConfig) && !isFixed(src)) {
-        newConfig.style = change2Fixed(newConfig, root);
-      } else if (!isFixed(newConfig) && isFixed(src)) {
-        newConfig.style = await Fixed2Other(newConfig, root, this.getLayout);
+    let changed = false;
+    for (const id of [...map.keys()]) {
+      if (!this.getNodeById(id, false)) {
+        map.delete(id);
+        changed = true;
       }
     }
 
-    return newConfig;
+    if (changed) {
+      this.emit('invalid-node-change', map);
+    }
+  }
+
+  private addModifiedNodeId(id: Id) {
+    this.get('modifiedNodeIds').set(id, id);
+  }
+
+  /**
+   * 获取指定节点所属的页面 / 页面片：
+   * - 普通节点返回其所在的 page；
+   * - 节点本身就是 page / pageFragment 时返回它自己；
+   * - 找不到时返回 null。
+   * 供 `change` 事件携带「变更节点对应的 page」（而非编辑器当前选中页）。
+   */
+  private getPageOfNode(id: Id): MPage | MPageFragment | null {
+    const { node, page } = this.getNodeInfo(id, false);
+    if (page) return page;
+    if (node && isPageOrFragment(node)) return node as MPage | MPageFragment;
+    return null;
+  }
+
+  private captureSelectionBeforeOp() {
+    if (this.selectionBeforeOp) return;
+    this.selectionBeforeOp = this.get('nodes').map((n) => n.id);
+    // 与选区快照同步捕获「操作前」的校验错误状态；因 applyInvalidInfo 会在 pushOpHistory 前修改 invalidNodeIds，
+    // 必须在此（操作最开始）留存操作前快照，供 undo 还原。
+    this.invalidNodeIdsBeforeOp = new Map(this.get('invalidNodeIds'));
+  }
+
+  /**
+   * 比较「上一次 root」与「新 root」的页面 / 页面片，按页面粒度把整体替换拆成历史记录：
+   * - 新旧都存在且内容变化的页面 → 一条 `update`（整页快照替换，无 changeRecords）；
+   * - 仅新 root 存在的页面 → 一条 `add`；
+   * - 仅旧 root 存在的页面 → 一条 `remove`。
+   *
+   * 每条记录落到对应页面自己的历史栈（与普通节点操作一致），并标记来源 `source`。
+   * 内容未变化的页面不产生记录，避免重复设置相同 DSL 时产生噪声。
+   */
+  private pushRootDiffHistory(preRoot: MApp, nextRoot: MApp, source?: HistoryOpSource): void {
+    const prevPages = preRoot?.items || [];
+    const nextPages = nextRoot?.items || [];
+    const prevMap = new Map(prevPages.map((p) => [`${p.id}`, p]));
+    const nextMap = new Map(nextPages.map((p) => [`${p.id}`, p]));
+    const indexInItems = (root: MApp, id: Id) => (root.items ?? []).findIndex((item) => `${item.id}` === `${id}`);
+
+    // 收集本次整体替换中增删的页面，循环结束后合并为一次结构变更通知（避免逐页派发多个事件）
+    const addedPages: (MPage | MPageFragment)[] = [];
+    const removedPages: (MPage | MPageFragment)[] = [];
+
+    nextPages.forEach((nextPage) => {
+      const prevPage = prevMap.get(`${nextPage.id}`);
+      if (!prevPage) {
+        this.pushPageDiffStep(
+          'add',
+          nextPage,
+          { newSchema: cloneDeep(toRaw(nextPage)), parentId: nextRoot.id, index: indexInItems(nextRoot, nextPage.id) },
+          source,
+        );
+        addedPages.push(nextPage);
+      } else if (!isEqual(toRaw(prevPage), toRaw(nextPage))) {
+        this.pushPageDiffStep(
+          'update',
+          nextPage,
+          { oldSchema: cloneDeep(toRaw(prevPage)), newSchema: cloneDeep(toRaw(nextPage)) },
+          source,
+        );
+      }
+    });
+
+    prevPages.forEach((prevPage) => {
+      if (!nextMap.has(`${prevPage.id}`)) {
+        this.pushPageDiffStep(
+          'remove',
+          prevPage,
+          { oldSchema: cloneDeep(toRaw(prevPage)), parentId: preRoot.id, index: indexInItems(preRoot, prevPage.id) },
+          source,
+        );
+        removedPages.push(prevPage);
+      }
+    });
+
+    if (addedPages.length || removedPages.length) {
+      historyService.notifyPageStructureChange({ add: addedPages, remove: removedPages });
+    }
+  }
+
+  /**
+   * 构造一条页面级「set root」历史记录（不携带选区 / modifiedNodeIds 上下文）并落到该页面自己的栈。
+   *
+   * 连续 set root 替换：若该页栈最新一条已是**同来源**的 set root 记录（{@link StepValue.rootStep} 且 `source` 相同），
+   * 则用本次记录**替换**它而非新增，避免源码反复保存 / 外部重设 DSL 时堆积多条 root 记录；
+   * 来源不同则照常新增（initial 基线不是 rootStep，不在此列）。
+   */
+  private pushPageDiffStep(
+    opType: HistoryOpType,
+    page: MPage | MPageFragment,
+    diffItem: StepDiffItem<MNode>,
+    source?: HistoryOpSource,
+  ): void {
+    const step: StepValue = {
+      uuid: guid(),
+      data: { name: page.name || '', id: page.id },
+      opType,
+      extra: {
+        selectedBefore: [],
+        selectedAfter: [],
+        modifiedNodeIds: new Map(),
+      },
+      diff: [diffItem],
+      rootStep: true,
+    };
+    if (source) step.source = source;
+
+    const top = historyService.getCurrentPageStep(page.id);
+    if (top?.rootStep && top.source === source) {
+      historyService.replaceCurrentStep('page', step, page.id);
+    } else {
+      historyService.push('page', step, page.id);
+    }
+  }
+
+  private pushOpHistory(
+    opType: HistoryOpType,
+    {
+      diff,
+      pageData,
+      historyDescription,
+      source,
+    }: {
+      diff: StepDiffItem<MNode>[];
+      pageData: { name: string; id: Id };
+      historyDescription?: string;
+      source?: HistoryOpSource;
+    },
+  ): string | null {
+    const step: StepValue = {
+      uuid: guid(),
+      data: pageData,
+      opType,
+      extra: {
+        selectedBefore: this.selectionBeforeOp ?? [],
+        selectedAfter: this.get('nodes').map((n) => n.id),
+        modifiedNodeIds: new Map(this.get('modifiedNodeIds')),
+        // 方向性双快照：undo 还原「操作前」错误状态，redo 还原「操作后」错误状态。
+        invalidNodeIdsBefore: new Map(this.invalidNodeIdsBeforeOp ?? this.get('invalidNodeIds')),
+        invalidNodeIdsAfter: new Map(this.get('invalidNodeIds')),
+      },
+      diff,
+    };
+    if (historyDescription) step.historyDescription = historyDescription;
+    if (source) step.source = source;
+    // 显式按 step.data.id 入栈：跨页操作（如 moveToContainer 从源页搬到目标页）
+    // 必须落到正确的页面栈，否则会把记录错误地推到当前活动页 / 操作发起页。
+    const pushed = historyService.push('page', step, pageData.id);
+    // push 返回 null 表示当前没有可写入的页面栈（未真正入栈），此时不应返回 uuid。
+    const historyId = pushed ? step.uuid : null;
+    this.lastPushedHistoryId = historyId;
+    this.selectionBeforeOp = null;
+    this.invalidNodeIdsBeforeOp = null;
+    return historyId;
+  }
+
+  /**
+   * 应用历史操作（撤销 / 重做）
+   *
+   * 删除 / 更新类修改走 `editor.remove / update`，并通过 `doNotPushHistory` 阻止再次入栈、
+   * `doNotSelect / doNotSwitchPage` 让选区由方法末尾的统一逻辑兜底；
+   * 「重新插回节点」（撤销 remove / 重做 add）需按 step 记录的 parentId / index 精确还原，
+   * 不走 this.add，由手工 splice + stage.add 完成后补发等价的 add / change 事件（见 emitHistoryInsertEvents）。
+   *
+   * 注意：这些路径都会发出 add / remove / update / change 事件，业务侧若需要区分"用户操作"与"撤销重做触发"，
+   * 请监听 `history-change` 事件配合判断。
+   *
+   * @param step 操作记录
+   * @param reverse true = 撤销，false = 重做
+   */
+  private async applyHistoryOp(step: StepValue, reverse: boolean) {
+    // 初始基线 step 仅作展示，不承载任何变更，撤销/重做时无需应用（正常流程下也不会被触达）。
+    if (step.opType === 'initial') return;
+    const root = this.get('root');
+    const stage = this.get('stage');
+    if (!root) return;
+
+    // 撤销/重做内部复用 add/remove/update，透传被应用 step 上记录的 source，
+    // 使其触发的 change 事件同样携带「历史来源」
+    const commonOpts = {
+      doNotSelect: true,
+      doNotSwitchPage: true,
+      doNotPushHistory: true,
+      historySource: step.source,
+    } as const;
+
+    switch (step.opType) {
+      case 'add': {
+        const items = step.diff ?? [];
+        if (reverse) {
+          // 撤销 add：把当时加入的节点删除
+          for (const { newSchema } of items) {
+            if (!newSchema) continue;
+            const existing = this.getNodeById(newSchema.id, false);
+            if (existing) {
+              await this.remove(existing, commonOpts);
+            }
+          }
+        } else {
+          // 重做 add：按记录的 parentId / index 把节点重新插回父容器。
+          // 按目标 index 升序逐个插入，先小后大避免索引漂移。
+          // 不走 this.add：doAdd 依赖当前选中节点（无选区时直接抛错），且只能插到选中节点之后 / 末尾，
+          // 无法按 step 记录的 parentId / index 精确还原，还会重算 style 破坏已记录的终态位置。
+          const sorted = [...items].sort((a, b) => (a.index ?? 0) - (b.index ?? 0));
+          const addedNodes: MNode[] = [];
+          for (const { newSchema, parentId, index } of sorted) {
+            if (!newSchema || parentId === undefined) continue;
+            const parent = this.getNodeById(parentId, false) as MContainer | null;
+            if (parent?.items) {
+              const addedNode = cloneDeep(newSchema);
+              const insertIndex = clampIndex(index, parent.items.length);
+              parent.items.splice(insertIndex, 0, addedNode);
+              addedNodes.push(addedNode);
+              await stage?.add({
+                config: cloneDeep(newSchema),
+                parent: cloneDeep(parent),
+                parentId: parent.id,
+                root: cloneDeep(root),
+                index: insertIndex,
+              });
+            }
+          }
+          this.emitHistoryInsertEvents(addedNodes, step.source);
+        }
+        break;
+      }
+      case 'remove': {
+        const items = step.diff ?? [];
+        if (reverse) {
+          // 撤销 remove：按原 index 升序逐个插回（先小后大避免索引漂移）；不走 this.add 的原因同上
+          const sorted = [...items].sort((a, b) => (a.index ?? 0) - (b.index ?? 0));
+          const addedNodes: MNode[] = [];
+          for (const { oldSchema, parentId, index } of sorted) {
+            if (!oldSchema || parentId === undefined) continue;
+            const parent = this.getNodeById(parentId, false) as MContainer | null;
+            if (parent?.items) {
+              const addedNode = cloneDeep(oldSchema);
+              const insertIndex = clampIndex(index, parent.items.length);
+              parent.items.splice(insertIndex, 0, addedNode);
+              addedNodes.push(addedNode);
+              await stage?.add({
+                config: cloneDeep(oldSchema),
+                parent: cloneDeep(parent),
+                parentId,
+                root: cloneDeep(root),
+                index: insertIndex,
+              });
+            }
+          }
+          this.emitHistoryInsertEvents(addedNodes, step.source);
+        } else {
+          // 重做 remove：再删一次
+          for (const { oldSchema } of items) {
+            if (!oldSchema) continue;
+            const existing = this.getNodeById(oldSchema.id, false);
+            if (existing) {
+              await this.remove(existing, commonOpts);
+            }
+          }
+        }
+        break;
+      }
+      case 'update': {
+        const items = step.diff ?? [];
+        // 优先按 changeRecords 局部 patch：仅触达 propPath 下的字段，避免整节点替换冲掉同节点上其它无关变更。
+        // 没有 changeRecords 的（如内部 sort/moveLayer/拖动等整节点快照场景）才退化为整节点替换。
+        const configs = items
+          .filter((item) => item.oldSchema && item.newSchema)
+          .map(({ oldSchema, newSchema, changeRecords }) => {
+            const oldNode = oldSchema!;
+            const newNode = newSchema!;
+            if (changeRecords?.length) {
+              const sourceForValues = reverse ? oldNode : newNode;
+              // 仅保留 id / type 作为最小骨架，再按 propPath 写入需要回滚/重做的字段；
+              // 后续 update -> mergeWith 会与现有节点深合并，patch 中未涉及的字段不会被改动。
+              const patch: MNode = { id: newNode.id, type: newNode.type };
+              for (const record of changeRecords) {
+                if (!record.propPath) {
+                  // 没有 propPath 视为整节点替换
+                  return cloneDeep(sourceForValues);
+                }
+                const value = cloneDeep(getValueByKeyPath(record.propPath, sourceForValues));
+                setValueByKeyPath(record.propPath, value, patch);
+              }
+              return patch;
+            }
+            return cloneDeep(reverse ? oldNode : newNode);
+          });
+        if (configs.length) {
+          await this.update(configs, { doNotPushHistory: true, historySource: step.source });
+        }
+        break;
+      }
+    }
+
+    this.set('modifiedNodeIds', step.extra?.modifiedNodeIds ?? new Map());
+
+    // 还原校验错误标记：因 undo/redo 复用同一 step，需按方向取「操作前 / 操作后」快照——
+    // undo(reverse=true) 还原到操作前的错误状态（撤销一个「校验失败」的改动后错误消失），
+    // redo(reverse=false) 还原到操作后的错误状态（重做后错误恢复）。
+    // 浅拷贝一份以隔离历史快照，避免后续 set/deleteInvalidNode 反向污染 step.extra。
+    const invalidToRestore =
+      (reverse ? step.extra?.invalidNodeIdsBefore : step.extra?.invalidNodeIdsAfter) ?? new Map();
+    this.set('invalidNodeIds', new Map(invalidToRestore));
+    this.emit('invalid-node-change', this.get('invalidNodeIds'));
+
+    const page = toRaw(this.get('page'));
+    if (page) {
+      const selectIds = (reverse ? step.extra?.selectedBefore : step.extra?.selectedAfter) ?? [];
+      setTimeout(() => {
+        if (!selectIds.length) return;
+
+        if (selectIds.length > 1) {
+          this.multiSelect(selectIds);
+          stage?.multiSelect(selectIds);
+        } else {
+          this.select(selectIds[0])
+            .then(() => stage?.select(selectIds[0]))
+            .catch(() => {});
+        }
+      }, 0);
+      this.emit('history-change', page as MPage | MPageFragment);
+    }
   }
 
   private selectedConfigExceptionHandler(config: MNode | Id): EditorNodeInfo {
-    let id: Id;
-    if (typeof config === 'string' || typeof config === 'number') {
-      id = config;
-    } else {
-      id = config.id;
-    }
-    if (!id) {
-      throw new Error('没有ID，无法选中');
-    }
+    return resolveSelectedNode(config, (id) => this.getNodeInfo(id), this.state.root?.id);
+  }
 
-    const { node, parent, page } = this.getNodeInfo(id);
-    if (!node) throw new Error('获取不到组件信息');
-
-    if (node.id === this.state.root?.id) {
-      throw new Error('不能选根节点');
-    }
-    return {
-      node,
-      parent,
-      page,
-    };
+  /**
+   * 撤销 remove / 重做 add 通过手工 splice 按 step 记录的 parentId / index 精确还原节点（不走 this.add，原因见调用处注释），
+   * 这里补齐与 this.add 等价的 add / change 事件，保证撤销/重做路径的事件行为与正向操作一致。
+   */
+  private emitHistoryInsertEvents(nodes: MNode[], source?: HistoryOpSource) {
+    if (!nodes.length) return;
+    this.emit('add', nodes);
+    this.emit('change', {
+      type: 'add',
+      data: nodes.map((node) => ({ node, page: this.getPageOfNode(node.id) })),
+      historySource: source,
+      // 撤销/重做本身不再写入历史记录
+      doNotPushHistory: true,
+    });
   }
 }
 

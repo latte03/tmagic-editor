@@ -1,6 +1,6 @@
 <template>
   <TMagicCascader
-    v-model="model[name]"
+    :model-value="value"
     ref="tMagicCascader"
     style="width: 100%"
     clearable
@@ -13,19 +13,21 @@
     :props="{
       multiple: config.multiple ?? false,
       emitPath: config.emitPath ?? true,
-      checkStrictly: config.checkStrictly ?? false,
+      checkStrictly: checkStrictly ?? false,
     }"
+    @update:model-value="updateModelValueHandler"
     @change="changeHandler"
   ></TMagicCascader>
 </template>
 
 <script setup lang="ts">
-import { inject, ref, watchEffect } from 'vue';
+import { computed, inject, ref, watchEffect } from 'vue';
 
 import { TMagicCascader } from '@tmagic/design';
 
 import type { CascaderConfig, CascaderOption, FieldProps, FormState } from '../schema';
 import { getConfig } from '../utils/config';
+import { filterFunction } from '../utils/form';
 import { useAddField } from '../utils/useAddField';
 
 defineOptions({
@@ -36,7 +38,7 @@ const props = defineProps<FieldProps<CascaderConfig>>();
 
 const emit = defineEmits(['change']);
 
-const mForm = inject<FormState | null>('mForm');
+const mForm = inject<FormState | undefined>('mForm');
 
 useAddField(props.prop);
 
@@ -46,6 +48,34 @@ const tMagicCascader = ref<InstanceType<typeof TMagicCascader>>();
 
 const options = ref<CascaderOption[]>([]);
 const remoteData = ref<any>(null);
+
+const checkStrictly = computed(() => filterFunction(mForm, props.config.checkStrictly, props));
+const valueSeparator = computed(() => filterFunction<string>(mForm, props.config.valueSeparator, props));
+
+const value = computed(() => {
+  if (typeof props.model[props.name] === 'string' && valueSeparator.value) {
+    return props.model[props.name].split(valueSeparator.value);
+  }
+  return props.model[props.name];
+});
+
+const updateModelValueHandler = (value: string[] | number[] | any) => {
+  let result = value;
+  if (valueSeparator.value) {
+    result = value.join(valueSeparator.value);
+  }
+
+  if (typeof result === 'undefined') {
+    if (Array.isArray(props.model[props.name])) {
+      emit('change', []);
+    } else if (typeof props.model[props.name] === 'string') {
+      emit('change', '');
+    } else if (typeof props.model[props.name] === 'object') {
+      emit('change', null);
+    }
+  }
+  emit('change', result);
+};
 
 const setRemoteOptions = async function () {
   const { config } = props;
@@ -82,9 +112,18 @@ const setRemoteOptions = async function () {
 
 // 初始化
 if (typeof props.config.options === 'function' && props.model && mForm) {
-  watchEffect(
-    () => (options.value = (props.config.options as Function)(mForm, { model: props.model, formValues: mForm.values })),
-  );
+  watchEffect(() => {
+    typeof props.config.options === 'function' &&
+      Promise.resolve(
+        props.config.options(mForm, {
+          model: props.model,
+          prop: props.prop,
+          formValue: mForm?.values,
+        }),
+      ).then((data) => {
+        options.value = data;
+      });
+  });
 } else if (!props.config.options?.length || props.config.remote) {
   Promise.resolve(setRemoteOptions());
 } else if (Array.isArray(props.config.options)) {
@@ -93,10 +132,9 @@ if (typeof props.config.options === 'function' && props.model && mForm) {
   });
 }
 
-const changeHandler = (value: any) => {
+const changeHandler = () => {
   if (!tMagicCascader.value) return;
   tMagicCascader.value.setQuery('');
   tMagicCascader.value.setPreviousQuery(null);
-  emit('change', value);
 };
 </script>

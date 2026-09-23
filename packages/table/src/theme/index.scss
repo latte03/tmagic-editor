@@ -1,0 +1,34 @@
+.m-table {
+  .el-button.action-btn + .el-button.action-btn {
+    margin-left: 0;
+  }
+  .keep-all {
+    word-break: keep-all;
+  }
+  .el-table .cell > div {
+    display: inline-block;
+    vertical-align: middle;
+  }
+  .el-table__row.el-table__row--level-1 {
+    color: #999;
+  }
+}
+
+.tmagic-table-sub-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  align-items: flex-start;
+
+  .sub-action-btn {
+    width: 100%;
+  }
+
+  .tmagic-design-button + .tmagic-design-button {
+    margin-left: 0;
+  }
+
+  .tmagic-design-button {
+    justify-content: flex-start;
+  }
+}

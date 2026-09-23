@@ -1,51 +1,27 @@
 <template>
-  <TMagicTableColumn
-    show-overflow-tooltip
-    :label="config.label"
-    :width="config.width"
-    :fixed="config.fixed"
-    :sortable="config.sortable"
-    :prop="config.prop"
-  >
-    <template v-slot="scope">
-      <component
-        :is="config.component"
-        v-bind="componentProps(scope.row, scope.$index)"
-        v-on="componentListeners(scope.row, scope.$index)"
-      ></component>
-    </template>
-  </TMagicTableColumn>
+  <component
+    :is="config.component"
+    v-bind="resolveComponentProps(config, row, index)"
+    v-on="resolveComponentListeners(config, row, index)"
+  ></component>
 </template>
 
 <script lang="ts" setup>
-import { TMagicTableColumn } from '@tmagic/design';
-
+import { resolveComponentListeners, resolveComponentProps } from './componentHelpers';
 import { ColumnConfig } from './schema';
 
 defineOptions({
   name: 'MTableColumn',
 });
 
-const props = withDefaults(
+withDefaults(
   defineProps<{
     config: ColumnConfig;
+    row: any;
+    index: number;
   }>(),
   {
     config: () => ({}),
   },
 );
-
-const componentProps = (row: any, index: number) => {
-  if (typeof props.config.props === 'function') {
-    return props.config.props(row, index) || {};
-  }
-  return props.config.props || {};
-};
-
-const componentListeners = (row: any, index: number) => {
-  if (typeof props.config.listeners === 'function') {
-    return props.config.listeners(row, index) || {};
-  }
-  return props.config.listeners || {};
-};
 </script>

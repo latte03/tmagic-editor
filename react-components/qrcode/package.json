@@ -1,0 +1,37 @@
+{
+  "version": "0.1.0",
+  "name": "@tmagic/react-qrcode",
+  "type": "module",
+  "main": "src/index.ts",
+  "files": [
+    "src"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Tencent/tmagic-editor.git"
+  },
+  "dependencies": {
+    "@tmagic/form-schema": "workspace:^",
+    "qrcode": "^1.5.4"
+  },
+  "peerDependencies": {
+    "@tmagic/core": "workspace:^",
+    "@tmagic/react-runtime-help": "workspace:^",
+    "react": ">=18.3.1",
+    "react-dom": ">=18.3.1",
+    "typescript": "catalog:"
+  },
+  "peerDependenciesMeta": {
+    "typescript": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@types/qrcode": "^1.5.6",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0"
+  }
+}

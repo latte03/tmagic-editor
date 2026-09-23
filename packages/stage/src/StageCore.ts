@@ -1,7 +1,7 @@
 /*
  * Tencent is pleased to support the open source community by making TMagicEditor available.
  *
- * Copyright (C) 2023 THL A29 Limited, a Tencent company.  All rights reserved.
+ * Copyright (C) 2025 Tencent.  All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,12 +18,15 @@
 
 import { EventEmitter } from 'events';
 
+import { SnapdomOptions } from '@zumer/snapdom';
 import type { MoveableOptions, OnDragStart } from 'moveable';
 
-import type { Id } from '@tmagic/schema';
+import type { Id } from '@tmagic/core';
+import { getIdFromEl } from '@tmagic/core';
 
 import ActionManager from './ActionManager';
-import { DEFAULT_ZOOM } from './const';
+import { DEFAULT_ZOOM, PAGE_CLASS } from './const';
+import StageFlashHighlight from './StageFlashHighlight';
 import StageMask from './StageMask';
 import StageRender from './StageRender';
 import type {
@@ -46,25 +49,29 @@ import type {
  */
 export default class StageCore extends EventEmitter {
   public container?: HTMLDivElement;
-  public renderer: StageRender;
-  public mask: StageMask;
-  public actionManager: ActionManager;
+  public renderer: StageRender | null = null;
+  public mask: StageMask | null = null;
+  public actionManager: ActionManager | null = null;
+  public flashHighlight: StageFlashHighlight | null = null;
 
   private pageResizeObserver: ResizeObserver | null = null;
   private autoScrollIntoView: boolean | undefined;
   private customizedRender?: CustomizeRender;
+  /** 非点击画布选中组件时，是否对选中区域做高亮闪烁提示，默认开启 */
+  private disabledFlashTip: boolean;
 
   constructor(config: StageCoreConfig) {
     super();
 
     this.autoScrollIntoView = config.autoScrollIntoView;
     this.customizedRender = config.render;
+    this.disabledFlashTip = config.disabledFlashTip ?? false;
 
     this.renderer = new StageRender({
       runtimeUrl: config.runtimeUrl,
       zoom: config.zoom,
       renderType: config.renderType,
-      customizedRender: async (): Promise<HTMLElement | null> => {
+      customizedRender: async (): Promise<HTMLElement | null | void> => {
         if (this?.customizedRender) {
           return await this.customizedRender(this);
         }
@@ -73,8 +80,13 @@ export default class StageCore extends EventEmitter {
     });
     this.mask = new StageMask({
       guidesOptions: config.guidesOptions,
+      disabledRule: config.disabledRule,
     });
     this.actionManager = new ActionManager(this.getActionManagerConfig(config));
+    this.flashHighlight = new StageFlashHighlight({
+      container: this.mask.content,
+      updateDragEl: config.updateDragEl,
+    });
 
     this.initRenderEvent();
     this.initActionEvent();
@@ -85,18 +97,57 @@ export default class StageCore extends EventEmitter {
    * 单选选中元素
    * @param id 选中的id
    */
-  public async select(id: Id, event?: MouseEvent): Promise<void> {
-    const el = this.renderer.getTargetElement(id);
-    if (el === this.actionManager.getSelectedEl()) return;
+  public async select(id: Id, event?: MouseEvent, options: { flash?: boolean } = {}): Promise<void> {
+    if (!this.renderer) {
+      return;
+    }
 
-    await this.renderer.select([id]);
+    let el = this.renderer.getTargetElement(id) || null;
 
-    el && this.mask.setLayout(el);
+    if (!el) {
+      el = await new Promise<HTMLElement | null>((resolve) => {
+        const observer = new MutationObserver(() => {
+          const target = this.renderer?.getTargetElement(id);
+          if (target) {
+            observer.disconnect();
+            clearTimeout(timer);
+            resolve(target);
+          }
+        });
 
-    this.actionManager.select(el, event);
+        const body = this.renderer?.getDocument()?.body;
+        if (!body) {
+          resolve(null);
+          return;
+        }
+
+        observer.observe(body, { childList: true, subtree: true });
+
+        const timer = setTimeout(() => {
+          observer.disconnect();
+          resolve(this.renderer?.getTargetElement(id) || null);
+        }, 1000);
+      });
+    }
+
+    if (el === this.actionManager?.getSelectedEl()) return;
+
+    await this.renderer?.select([id]);
+
+    if (el) {
+      this.mask?.setLayout(el);
+    }
+    this.actionManager?.select(el, event);
 
     if (el && (this.autoScrollIntoView || el.dataset.autoScrollIntoView)) {
-      this.mask.observerIntersection(el);
+      this.mask?.observerIntersection(el);
+    }
+
+    // 非点击画布选中（如从图层树、面包屑等外部选中，此时没有鼠标事件）时，对选中区域做一次高亮闪烁，帮助用户定位组件
+    // 选中页面(mask.page 或带有 magic-ui-page class 的节点)时不做闪烁提示
+    const isPage = el === this.mask?.page || el?.className.includes(PAGE_CLASS);
+    if (el && !event && options.flash !== false && !this.disabledFlashTip && !isPage) {
+      this.flashHighlight?.flash(el);
     }
   }
 
@@ -105,20 +156,20 @@ export default class StageCore extends EventEmitter {
    * @param ids 选中元素的id列表
    */
   public async multiSelect(ids: Id[]): Promise<void> {
-    const els = ids.map((id) => this.renderer.getTargetElement(id)).filter((el) => Boolean(el));
+    const els = ids.map((id) => this.renderer?.getTargetElement(id)).filter((el) => Boolean(el));
     if (els.length === 0) return;
 
     const lastEl = els[els.length - 1];
     // 是否减少了组件选择
-    const isReduceSelect = els.length < this.actionManager.getSelectedElList().length;
-    await this.renderer.select(ids);
+    const isReduceSelect = els.length < this.actionManager!.getSelectedElList().length;
+    await this.renderer?.select(ids);
 
-    lastEl && this.mask.setLayout(lastEl);
+    lastEl && this.mask?.setLayout(lastEl);
 
-    this.actionManager.multiSelect(ids);
+    this.actionManager?.multiSelect(ids);
 
     if (lastEl && (this.autoScrollIntoView || lastEl.dataset.autoScrollIntoView) && !isReduceSelect) {
-      this.mask.observerIntersection(lastEl);
+      this.mask?.observerIntersection(lastEl);
     }
   }
 
@@ -127,11 +178,11 @@ export default class StageCore extends EventEmitter {
    * @param el 要高亮的元素
    */
   public highlight(id: Id): void {
-    this.actionManager.highlight(id);
+    this.actionManager?.highlight(id);
   }
 
   public clearHighlight(): void {
-    this.actionManager.clearHighlight();
+    this.actionManager?.clearHighlight();
   }
 
   /**
@@ -141,13 +192,13 @@ export default class StageCore extends EventEmitter {
   public async update(data: UpdateData): Promise<void> {
     const { config } = data;
 
-    await this.renderer.update(data);
+    await this.renderer?.update(data);
     // 通过setTimeout等画布中组件完成渲染更新
     setTimeout(() => {
-      const el = this.renderer.getTargetElement(`${config.id}`);
-      if (el && this.actionManager.isSelectedEl(el)) {
+      const el = this.renderer?.getTargetElement(`${config.id}`);
+      if (el && this.actionManager?.isSelectedEl(el)) {
         // 更新了组件的布局，需要重新设置mask是否可以滚动
-        this.mask.setLayout(el);
+        this.mask?.setLayout(el);
         // 组件有更新，需要set
         this.actionManager.setSelectedEl(el);
         this.actionManager.updateMoveable(el);
@@ -160,7 +211,7 @@ export default class StageCore extends EventEmitter {
    * @param data 组件信息数据
    */
   public async add(data: UpdateData): Promise<void> {
-    return await this.renderer.add(data);
+    return await this.renderer?.add(data);
   }
 
   /**
@@ -168,11 +219,11 @@ export default class StageCore extends EventEmitter {
    * @param data 组件信息数据
    */
   public async remove(data: RemoveData): Promise<void> {
-    return await this.renderer.remove(data);
+    return await this.renderer?.remove(data);
   }
 
   public setZoom(zoom: number = DEFAULT_ZOOM): void {
-    this.renderer.setZoom(zoom);
+    this.renderer?.setZoom(zoom);
   }
 
   /**
@@ -183,8 +234,8 @@ export default class StageCore extends EventEmitter {
     this.container = el;
     const { mask, renderer } = this;
 
-    await renderer.mount(el);
-    mask.mount(el);
+    await renderer?.mount(el);
+    mask?.mount(el);
 
     this.emit('mounted');
   }
@@ -193,8 +244,8 @@ export default class StageCore extends EventEmitter {
    * 清空所有参考线
    */
   public clearGuides() {
-    this.mask.clearGuides();
-    this.actionManager.clearGuides();
+    this.mask?.clearGuides();
+    this.actionManager?.clearGuides();
   }
 
   /**
@@ -212,42 +263,80 @@ export default class StageCore extends EventEmitter {
    * 标记的作用：1、高亮容器，给用户一个加入容器的交互感知；2、释放鼠标后，通过标记的标志找到要加入的容器
    * @param event 鼠标事件
    * @param excludeElList 计算鼠标所在容器时要排除的元素列表
+   * @param isAdd 当前操作是否为新增组件（从组件列表拖入），开启 containerHighlightAddOnly 时只有新增才会标记
    * @returns timeoutId，调用方在鼠标移走时要取消该timeout，阻止标记
    */
-  public delayedMarkContainer(event: MouseEvent, excludeElList: Element[] = []): NodeJS.Timeout | undefined {
-    return this.actionManager.delayedMarkContainer(event, excludeElList);
+  public delayedMarkContainer(
+    event: MouseEvent,
+    excludeElList: Element[] = [],
+    isAdd = false,
+  ): NodeJS.Timeout | undefined {
+    return this.actionManager?.delayedMarkContainer(event, excludeElList, isAdd);
   }
 
   public getMoveableOption<K extends keyof MoveableOptions>(key: K): MoveableOptions[K] | undefined {
-    return this.actionManager.getMoveableOption(key);
+    return this.actionManager?.getMoveableOption(key);
   }
 
   public getDragStatus() {
-    return this.actionManager.getDragStatus();
+    return this.actionManager?.getDragStatus();
   }
 
   public disableMultiSelect() {
-    this.actionManager.disableMultiSelect();
+    this.actionManager?.disableMultiSelect();
   }
 
   public enableMultiSelect() {
-    this.actionManager.enableMultiSelect();
+    this.actionManager?.enableMultiSelect();
+  }
+
+  /**
+   * 设置是否始终启用多选模式（无需按住 Ctrl/Meta）。
+   * 当多选被 `disabledMultiSelect` 禁用时，本方法不会启用多选。
+   */
+  public setAlwaysMultiSelect(value: boolean) {
+    this.actionManager?.setAlwaysMultiSelect(value);
+  }
+
+  public reloadIframe(url: string) {
+    this.renderer?.reloadIframe(url);
+  }
+
+  /**
+   * 将指定id的dom元素生成为图片
+   */
+  public async getElementImage(
+    id: Id,
+    type: 'download' | 'raw' | 'svg' | 'canvas' | 'png' | 'jpeg' | 'webp' | 'blob' = 'png',
+    options: SnapdomOptions = {},
+  ) {
+    if (!this.renderer) {
+      throw new Error('Renderer is not initialized');
+    }
+
+    return this.renderer.getElementImage(id, type, options);
   }
 
   /**
    * 销毁实例
    */
   public destroy(): void {
-    const { mask, renderer, actionManager, pageResizeObserver } = this;
+    const { mask, renderer, actionManager, flashHighlight, pageResizeObserver } = this;
 
-    renderer.destroy();
-    mask.destroy();
-    actionManager.destroy();
+    renderer?.destroy();
+    mask?.destroy();
+    actionManager?.destroy();
+    flashHighlight?.destroy();
     pageResizeObserver?.disconnect();
 
     this.removeAllListeners();
 
     this.container = undefined;
+    this.renderer = null;
+    this.mask = null;
+    this.actionManager = null;
+    this.flashHighlight = null;
+    this.pageResizeObserver = null;
   }
 
   public on<Name extends keyof CoreEvents, Param extends CoreEvents[Name]>(
@@ -271,12 +360,23 @@ export default class StageCore extends EventEmitter {
 
     if (typeof ResizeObserver !== 'undefined') {
       this.pageResizeObserver = new ResizeObserver((entries) => {
-        this.mask.pageResize(entries);
-        this.actionManager.updateMoveable();
+        this.mask?.pageResize(entries);
+        this.actionManager?.updateMoveable();
       });
 
       this.pageResizeObserver.observe(page);
     }
+  }
+
+  /**
+   * page-el-update 后，若当前选中节点仍在新页面文档中且需要自动滚动，则重新触发 scrollIntoView
+   */
+  private scrollSelectedIntoViewAfterPageUpdate(): void {
+    const selected = this.actionManager?.getSelectedEl();
+    if (!selected?.isConnected) return;
+    if (!(this.autoScrollIntoView || selected.dataset.autoScrollIntoView)) return;
+
+    this.mask?.observerIntersection(selected);
   }
 
   private getActionManagerConfig(config: StageCoreConfig): ActionManagerConfig {
@@ -284,37 +384,44 @@ export default class StageCore extends EventEmitter {
       containerHighlightClassName: config.containerHighlightClassName,
       containerHighlightDuration: config.containerHighlightDuration,
       containerHighlightType: config.containerHighlightType,
+      containerHighlightAddOnly: config.containerHighlightAddOnly,
       moveableOptions: config.moveableOptions,
-      container: this.mask.content,
+      container: this.mask!.content,
       disabledDragStart: config.disabledDragStart,
       disabledMultiSelect: config.disabledMultiSelect,
+      alwaysMultiSelect: config.alwaysMultiSelect,
       canSelect: config.canSelect,
       isContainer: config.isContainer,
+      canDropIn: config.canDropIn,
       updateDragEl: config.updateDragEl,
       getRootContainer: () => this.container,
-      getRenderDocument: () => this.renderer.getDocument(),
-      getTargetElement: (id: Id) => this.renderer.getTargetElement(id),
-      getElementsFromPoint: (point: Point) => this.renderer.getElementsFromPoint(point),
+      getRenderDocument: () => this.renderer!.getDocument(),
+      getTargetElement: (id: Id) => this.renderer!.getTargetElement(id),
+      getElementsFromPoint: (point: Point) => this.renderer!.getElementsFromPoint(point),
     };
 
     return actionManagerConfig;
   }
 
   private initRenderEvent(): void {
-    this.renderer.on('runtime-ready', (runtime: Runtime) => {
+    this.renderer?.on('runtime-ready', (runtime: Runtime) => {
       this.emit('runtime-ready', runtime);
     });
-    this.renderer.on('page-el-update', (el: HTMLElement) => {
+    this.renderer?.on('page-el-update', (el: HTMLElement) => {
       this.mask?.observe(el);
       this.observePageResize(el);
+
+      // observe 切页时会重置滚动；若 select + scrollIntoView 已先完成，这里对仍挂载的选中节点
+      // 重新触发一次，避免滚动被打回顶部
+      this.scrollSelectedIntoViewAfterPageUpdate();
 
       this.emit('page-el-update', el);
     });
   }
 
   private initMaskEvent(): void {
-    this.mask.on('change-guides', (data: GuidesEventData) => {
-      this.actionManager.setGuidelines(data.type, data.guides);
+    this.mask?.on('change-guides', (data: GuidesEventData) => {
+      this.actionManager?.setGuidelines(data.type, data.guides);
       this.emit('change-guides', data);
     });
   }
@@ -335,14 +442,15 @@ export default class StageCore extends EventEmitter {
    */
   private initActionManagerEvent(): void {
     this.actionManager
-      .on('before-select', (el: HTMLElement, event?: MouseEvent) => {
-        this.select(el.id, event);
+      ?.on('before-select', (el: HTMLElement, event?: MouseEvent) => {
+        const id = getIdFromEl()(el);
+        id && this.select(id, event);
       })
       .on('select', (selectedEl: HTMLElement, event: MouseEvent) => {
         this.emit('select', selectedEl, event);
       })
       .on('before-multi-select', (els: HTMLElement[]) => {
-        this.multiSelect(els.map((el) => el.id));
+        this.multiSelect(els.map((el) => getIdFromEl()(el)).filter((id) => Boolean(id)) as string[]);
       })
       .on('multi-select', (selectedElList: HTMLElement[], event: MouseEvent) => {
         this.emit('multi-select', selectedElList, event);
@@ -357,7 +465,7 @@ export default class StageCore extends EventEmitter {
    */
   private initDrEvent(): void {
     this.actionManager
-      .on('update', (data: UpdateEventData) => {
+      ?.on('update', (data: UpdateEventData) => {
         this.emit('update', data);
       })
       .on('sort', (data: SortEventData) => {
@@ -365,6 +473,9 @@ export default class StageCore extends EventEmitter {
       })
       .on('select-parent', () => {
         this.emit('select-parent');
+      })
+      .on('rerender', () => {
+        this.emit('rerender');
       })
       .on('remove', (data: RemoveEventData) => {
         this.emit('remove', data);
@@ -377,11 +488,11 @@ export default class StageCore extends EventEmitter {
   private initMulDrEvent(): void {
     this.actionManager
       // 多选切换到单选
-      .on('change-to-select', (id: Id, e: MouseEvent) => {
+      ?.on('change-to-select', (id: Id, e: MouseEvent) => {
         this.select(id);
         // 先保证画布内完成渲染，再通知外部更新
         setTimeout(() => {
-          const el = this.renderer.getTargetElement(id);
+          const el = this.renderer?.getTargetElement(id);
           el && this.emit('select', el, e);
         });
       })
@@ -394,7 +505,7 @@ export default class StageCore extends EventEmitter {
    * 初始化Highlight类通过ActionManager抛出来的事件监听
    */
   private initHighlightEvent(): void {
-    this.actionManager.on('highlight', (highlightEl: HTMLElement) => {
+    this.actionManager?.on('highlight', (highlightEl: HTMLElement) => {
       this.emit('highlight', highlightEl);
     });
   }
@@ -404,7 +515,7 @@ export default class StageCore extends EventEmitter {
    */
   private initMouseEvent(): void {
     this.actionManager
-      .on('mousemove', (event: MouseEvent) => {
+      ?.on('mousemove', (event: MouseEvent) => {
         this.emit('mousemove', event);
       })
       .on('mouseleave', (event: MouseEvent) => {

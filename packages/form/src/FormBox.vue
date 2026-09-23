@@ -12,6 +12,11 @@
           :label-width="labelWidth"
           :label-position="labelPosition"
           :inline="inline"
+          :prevent-submit-default="preventSubmitDefault"
+          :use-field-text-in-error="useFieldTextInError"
+          :context="context"
+          :type-match-valid="typeMatchValid"
+          :validate-on-init="validateOnInit"
           @change="changeHandler"
         ></Form>
         <slot></slot>
@@ -39,7 +44,7 @@ import { computed, ref, watchEffect } from 'vue';
 import { TMagicButton, TMagicScrollbar } from '@tmagic/design';
 
 import Form from './Form.vue';
-import type { FormConfig } from './schema';
+import type { ContainerChangeEventData, FormConfig, FormContext, FormValue } from './schema';
 
 defineOptions({
   name: 'MFormBox',
@@ -53,20 +58,35 @@ const props = withDefaults(
     width?: number;
     height?: number;
     labelWidth?: string;
+    /** 是否开启类型匹配校验 */
+    typeMatchValid?: boolean;
+    /** 透传给内部 `MForm`，初始化完成后是否立即校验（默认 `false`） */
+    validateOnInit?: boolean;
     disabled?: boolean;
     size?: 'small' | 'default' | 'large';
     confirmText?: string;
     inline?: boolean;
-    labelPosition?: string;
+    labelPosition?: 'top' | 'left' | 'right';
+    preventSubmitDefault?: boolean;
+    /** 透传给内部 `MForm`，控制表单校验失败时错误提示前缀是否使用字段的 text 文案 */
+    useFieldTextInError?: boolean;
+    /** 透传给内部 `MForm` 的宿主业务上下文 */
+    context?: FormContext;
   }>(),
   {
     config: () => [],
     values: () => ({}),
     confirmText: '确定',
+    useFieldTextInError: true,
+    validateOnInit: false,
   },
 );
 
-const emit = defineEmits(['submit', 'change', 'error']);
+const emit = defineEmits<{
+  change: [v: any, eventData: ContainerChangeEventData];
+  submit: [v: any, eventData: ContainerChangeEventData];
+  error: [e: any];
+}>();
 
 const footerHeight = 60;
 
@@ -95,15 +115,16 @@ watchEffect(() => {
 
 const submitHandler = async () => {
   try {
+    const changeRecords = form.value?.changeRecords;
     const values = await form.value?.submitForm();
-    emit('submit', values);
+    emit('submit', values, { changeRecords });
   } catch (e) {
     emit('error', e);
   }
 };
 
-const changeHandler = (value: any) => {
-  emit('change', value);
+const changeHandler = (value: FormValue, eventData: ContainerChangeEventData) => {
+  emit('change', value, eventData);
 };
 
 const show = () => {};

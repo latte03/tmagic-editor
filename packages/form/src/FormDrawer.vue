@@ -1,8 +1,8 @@
 <template>
   <TMagicDrawer
-    class="m-form-drawer"
+    :class="['m-form-drawer', effectiveTheme ? `m-theme--${effectiveTheme}` : '']"
     ref="drawer"
-    v-model="visible"
+    v-model="dialogVisible"
     :title="title"
     :close-on-press-escape="closeOnPressEscape"
     :append-to-body="true"
@@ -16,7 +16,7 @@
     @close="closeHandler"
     @closed="closedHandler"
   >
-    <div v-if="visible" ref="drawerBody" class="m-drawer-body">
+    <div v-if="dialogVisible" ref="drawerBody" class="m-drawer-body">
       <Form
         ref="form"
         :size="size"
@@ -27,6 +27,12 @@
         :label-width="labelWidth"
         :label-position="labelPosition"
         :inline="inline"
+        :prevent-submit-default="preventSubmitDefault"
+        :use-field-text-in-error="useFieldTextInError"
+        :type-match-valid="typeMatchValid"
+        :validate-on-init="validateOnInit"
+        :context="context"
+        :theme="effectiveTheme"
         @change="changeHandler"
       ></Form>
       <slot></slot>
@@ -53,24 +59,28 @@
 </template>
 
 <script setup lang="ts">
-import { ref, watchEffect } from 'vue';
+import { computed, inject, provide, ref, watchEffect } from 'vue';
 
-import { TMagicButton, TMagicCol, TMagicDrawer, TMagicRow } from '@tmagic/design';
+import { M_THEME_KEY, TMagicButton, TMagicCol, TMagicDrawer, TMagicRow } from '@tmagic/design';
 
 import Form from './Form.vue';
-import type { FormConfig } from './schema';
+import type { ContainerChangeEventData, FormConfig, FormContext, FormValue } from './schema';
 
 defineOptions({
-  name: 'MFormDialog',
+  name: 'MFormDrawer',
 });
 
-withDefaults(
+const props = withDefaults(
   defineProps<{
     config?: FormConfig;
     values?: Object;
     parentValues?: Object;
     width?: string | number;
     labelWidth?: string;
+    /** 是否开启类型匹配校验 */
+    typeMatchValid?: boolean;
+    /** 透传给内部 `MForm`，初始化完成后是否立即校验（默认 `false`） */
+    validateOnInit?: boolean;
     disabled?: boolean;
     closeOnPressEscape?: boolean;
     title?: string;
@@ -78,24 +88,41 @@ withDefaults(
     size?: 'small' | 'default' | 'large';
     confirmText?: string;
     inline?: boolean;
-    labelPosition?: string;
+    labelPosition?: 'top' | 'left' | 'right';
+    preventSubmitDefault?: boolean;
+    /** 透传给内部 `MForm`，控制表单校验失败时错误提示前缀是否使用字段的 text 文案 */
+    useFieldTextInError?: boolean;
     /** 关闭前的回调，会暂停 Drawer 的关闭; done 是个 function type 接受一个 boolean 参数, 执行 done 使用 true 参数或不提供参数将会终止关闭 */
-    beforeClose?: (done: (cancel?: boolean) => void) => void;
+    beforeClose?: (_done: (_cancel?: boolean) => void) => void;
+    /** 透传给内部 `MForm` 的宿主业务上下文 */
+    context?: FormContext;
+    /**
+     * 主题名。优先级：传入 `theme` prop > 祖先 `provide(M_THEME_KEY)` > 空串。
+     * 计算结果会再次 `provide` 出去，使得 Drawer 被 Teleport 到 body 后，内部子树
+     * （包括 `MForm` 以及更深的 popover / dropdown）仍能拿到主题。
+     */
+    theme?: string;
   }>(),
   {
     closeOnPressEscape: true,
     config: () => [],
     values: () => ({}),
     confirmText: '确定',
+    useFieldTextInError: true,
+    validateOnInit: false,
   },
 );
+
+const ancestorTheme = inject(M_THEME_KEY, null);
+const effectiveTheme = computed(() => props.theme || ancestorTheme?.value || '');
+provide(M_THEME_KEY, effectiveTheme);
 
 const emit = defineEmits(['close', 'closed', 'submit', 'error', 'change', 'open', 'opened']);
 
 const drawer = ref<InstanceType<typeof TMagicDrawer>>();
 const form = ref<InstanceType<typeof Form>>();
 const drawerBody = ref<HTMLDivElement>();
-const visible = ref(false);
+const dialogVisible = ref(false);
 const saveFetch = ref(false);
 const bodyHeight = ref(0);
 
@@ -107,15 +134,16 @@ watchEffect(() => {
 
 const submitHandler = async () => {
   try {
+    const changeRecords = form.value?.changeRecords;
     const values = await form.value?.submitForm();
-    emit('submit', values);
+    emit('submit', values, { changeRecords });
   } catch (e) {
     emit('error', e);
   }
 };
 
-const changeHandler = (value: any) => {
-  emit('change', value);
+const changeHandler = (value: FormValue, eventData: ContainerChangeEventData) => {
+  emit('change', value, eventData);
 };
 
 const openHandler = () => {
@@ -135,25 +163,42 @@ const closedHandler = () => {
 };
 
 const show = () => {
-  visible.value = true;
+  dialogVisible.value = true;
 };
 
 const hide = () => {
-  visible.value = false;
+  dialogVisible.value = false;
 };
-
+const close = () => {
+  dialogVisible.value = false;
+};
+const cancel = () => {
+  hide();
+};
 /** 用于关闭 Drawer, 该方法会调用传入的 before-close 方法 */
 const handleClose = () => {
   drawer.value?.handleClose();
+};
+
+const save = async () => {
+  try {
+    const changeRecords = [...(form.value?.changeRecords || [])];
+    const values = await form.value?.submitForm();
+    emit('submit', values, { changeRecords });
+  } catch (e) {
+    emit('error', e);
+  }
 };
 
 defineExpose({
   form,
   saveFetch,
   bodyHeight,
-
+  close,
   show,
   hide,
+  save,
+  cancel,
   handleClose,
 });
 </script>

@@ -1,6 +1,6 @@
 <template>
   <div class="editor-app">
-    <m-editor
+    <TMagicEditor
       v-model="value"
       ref="editor"
       :menu="menu"
@@ -11,20 +11,31 @@
       :datasource-event-method-list="datasourceEventMethodList"
       :datasource-configs="datasourceConfigs"
       :datasource-values="datasourceValues"
+      :theme="theme"
       :component-group-list="componentGroupList"
       :datasource-list="datasourceList"
       :default-selected="defaultSelected"
       :moveable-options="moveableOptions"
       :auto-scroll-into-view="true"
       :stage-rect="stageRect"
+      :layerContentMenu="contentMenuData"
+      :stageContentMenu="contentMenuData"
+      :enable-props-form-validate="true"
       @props-submit-error="propsSubmitErrorHandler"
     >
       <template #workspace-content>
         <DeviceGroup ref="deviceGroup" v-model="stageRect"></DeviceGroup>
       </template>
-    </m-editor>
+    </TMagicEditor>
 
-    <TMagicDialog v-model="previewVisible" destroy-on-close class="pre-viewer" title="预览" :width="stageRect?.width">
+    <TMagicDialog
+      v-model="previewVisible"
+      close-onClick-modal
+      destroy-on-close
+      class="pre-viewer"
+      title="预览"
+      :width="stageRect?.width"
+    >
       <iframe
         v-if="previewVisible"
         ref="iframe"
@@ -38,45 +49,59 @@
 </template>
 
 <script lang="ts" setup>
-import { computed, nextTick, onBeforeUnmount, ref, toRaw } from 'vue';
-import { useRouter } from 'vue-router';
-import { Coin, Connection, Document } from '@element-plus/icons-vue';
-import serialize from 'serialize-javascript';
+import { computed, onBeforeUnmount, onMounted, ref, shallowRef, toRaw } from 'vue';
+import { debounce } from 'lodash-es';
 
-import { TMagicDialog, tMagicMessage, tMagicMessageBox } from '@tmagic/design';
-import { DatasourceTypeOption, editorService, MenuBarData, MoveableOptions, TMagicEditor } from '@tmagic/editor';
-import type { MContainer, MNode } from '@tmagic/schema';
-import { NodeType } from '@tmagic/schema';
-import type { CustomizeMoveableOptionsCallbackConfig } from '@tmagic/stage';
-import { asyncLoadJs } from '@tmagic/utils';
+import type { MApp, MContainer, MNode } from '@tmagic/core';
+import type { DatasourceTypeOption, HistoryOpSource, StoreState } from '@tmagic/editor';
+import {
+  editorService,
+  historyService,
+  markStackSaved,
+  propsService,
+  serializeConfig,
+  TMagicDialog,
+  TMagicEditor,
+  tMagicMessage,
+  uiService,
+} from '@tmagic/editor';
 
 import DeviceGroup from '../components/DeviceGroup.vue';
 import componentGroupList from '../configs/componentGroupList';
 import dsl from '../configs/dsl';
-import { uaMap } from '../const';
+import { DEFAULT_THEME } from '../theme-loader';
 
-const { VITE_RUNTIME_PATH, VITE_ENTRY_PATH } = import.meta.env;
+import { useEditorContentMenuData } from './composables/use-editor-content-menu-data';
+import { useEditorMenu } from './composables/use-editor-menu';
+import { useEditorMoveableOptions } from './composables/use-editor-moveable-options';
+import { useEditorRes } from './composables/use-editor-res';
+
+const { VITE_RUNTIME_PATH } = import.meta.env;
+
+uiService.set('propsPanelSize', 'default');
 
 const datasourceList: DatasourceTypeOption[] = [];
 const runtimeUrl = `${VITE_RUNTIME_PATH}/playground/index.html`;
-const router = useRouter();
-const editor = ref<InstanceType<typeof TMagicEditor>>();
-const deviceGroup = ref<InstanceType<typeof DeviceGroup>>();
-const iframe = ref<HTMLIFrameElement>();
-const previewVisible = ref(false);
-const value = ref(dsl);
+
+const { propsValues, propsConfigs, eventMethodList, datasourceConfigs, datasourceValues, datasourceEventMethodList } =
+  useEditorRes();
+const { contentMenuData } = useEditorContentMenuData();
+
+const editor = shallowRef<InstanceType<typeof TMagicEditor>>();
+const value = ref<MApp>();
+const theme = ref(sessionStorage.getItem('tmagic-playground-theme') || DEFAULT_THEME);
 const defaultSelected = ref(dsl.items[0].id);
-const propsValues = ref<Record<string, any>>({});
-const propsConfigs = ref<Record<string, any>>({});
-const eventMethodList = ref<Record<string, any>>({});
-const datasourceEventMethodList = ref<Record<string, any>>({
-  base: {
-    events: [],
-    methods: [],
-  },
-});
-const datasourceConfigs = ref<Record<string, any>>({});
-const datasourceValues = ref<Record<string, any>>({});
+
+const updateThemeVariables = (themeName: string) => {
+  if (themeName === 'magic-admin') {
+    document.documentElement.style.setProperty('--el-color-primary', '#0054e1');
+  } else {
+    document.documentElement.style.removeProperty('--el-color-primary');
+  }
+};
+
+updateThemeVariables(theme.value);
+
 const stageRect = ref({
   width: 375,
   height: 817,
@@ -86,150 +111,21 @@ const previewUrl = computed(
   () => `${VITE_RUNTIME_PATH}/page/index.html?localPreview=1&page=${editor.value?.editorService.get('page')?.id}`,
 );
 
-const menu: MenuBarData = {
-  left: [
-    {
-      type: 'text',
-      text: '魔方',
-    },
-  ],
-  center: ['delete', 'undo', 'redo', 'guides', 'rule', 'zoom'],
-  right: [
-    {
-      type: 'button',
-      text: 'Form Playground',
-      handler: () => router.push('form'),
-    },
-    {
-      type: 'button',
-      text: 'Form Editor Playground',
-      handler: () => router.push('form-editor'),
-    },
-    {
-      type: 'button',
-      text: 'Table Playground',
-      handler: () => router.push('table'),
-    },
-    '/',
-    {
-      type: 'button',
-      text: '预览',
-      icon: Connection,
-      handler: async (services) => {
-        if (services?.editorService.get('modifiedNodeIds').size > 0) {
-          try {
-            await tMagicMessageBox.confirm('有修改未保存，是否先保存再预览', '提示', {
-              confirmButtonText: '保存并预览',
-              cancelButtonText: '预览',
-              type: 'warning',
-            });
-            save();
-            tMagicMessage.success('保存成功');
-          } catch (e) {
-            console.error(e);
-          }
-        }
-        previewVisible.value = true;
-
-        await nextTick();
-
-        if (!iframe.value?.contentWindow || !deviceGroup.value?.viewerDevice) return;
-        Object.defineProperty(iframe.value.contentWindow.navigator, 'userAgent', {
-          value: uaMap[deviceGroup.value.viewerDevice],
-          writable: true,
-        });
-      },
-    },
-    {
-      type: 'button',
-      text: '保存',
-      icon: Coin,
-      handler: () => {
-        save();
-        tMagicMessage.success('保存成功');
-      },
-    },
-    '/',
-    {
-      type: 'button',
-      icon: Document,
-      tooltip: '源码',
-      handler: (service) => service?.uiService.set('showSrc', !service?.uiService.get('showSrc')),
-    },
-  ],
-};
-
-const moveableOptions = (config?: CustomizeMoveableOptionsCallbackConfig): MoveableOptions => {
-  const options: MoveableOptions = {};
-
-  if (!editor.value) return options;
-
-  const page = editor.value.editorService.get('page');
-
-  const ids = config?.targetElIds || [];
-  let isPage = page && ids.includes(`${page.id}`);
-
-  if (!isPage) {
-    const id = config?.targetElId;
-    if (id) {
-      const node = editor.value.editorService.getNodeById(id);
-      isPage = node?.type === NodeType.PAGE;
-    }
-  }
-
-  options.draggable = !isPage;
-  options.resizable = !isPage;
-  options.rotatable = !isPage;
-
-  // 双击后在弹层中编辑时，根组件不能拖拽
-  if (config?.targetEl?.parentElement?.classList.contains('tmagic-editor-sub-stage-wrap')) {
-    options.draggable = false;
-    options.resizable = false;
-    options.rotatable = false;
-  }
-
-  return options;
-};
+const { moveableOptions } = useEditorMoveableOptions(editor);
 
 const save = () => {
-  localStorage.setItem(
-    'magicDSL',
-    serialize(toRaw(value.value), {
-      space: 2,
-      unsafe: true,
-    }).replace(/"(\w+)":\s/g, '$1: '),
-  );
+  localStorage.setItem('magicDSL', serializeConfig(toRaw(value.value)));
   editor.value?.editorService.resetModifiedNodeId();
+  // 标记当前历史记录为已保存，从 IndexedDB 恢复时会把游标定位到此处。
+  historyService.markSaved('page');
 };
 
-asyncLoadJs(`${VITE_ENTRY_PATH}/config/index.umd.cjs`).then(() => {
-  propsConfigs.value = (globalThis as any).magicPresetConfigs;
-});
-asyncLoadJs(`${VITE_ENTRY_PATH}/value/index.umd.cjs`).then(() => {
-  propsValues.value = (globalThis as any).magicPresetValues;
-});
-asyncLoadJs(`${VITE_ENTRY_PATH}/event/index.umd.cjs`).then(() => {
-  eventMethodList.value = (globalThis as any).magicPresetEvents;
-});
-asyncLoadJs(`${VITE_ENTRY_PATH}/ds-config/index.umd.cjs`).then(() => {
-  datasourceConfigs.value = (globalThis as any).magicPresetDsConfigs;
-});
-asyncLoadJs(`${VITE_ENTRY_PATH}/ds-value/index.umd.cjs`).then(() => {
-  datasourceValues.value = (globalThis as any).magicPresetDsValues;
-});
+const themeChangeHandler = (value: string) => {
+  theme.value = value;
+  updateThemeVariables(value);
+};
 
-try {
-  // eslint-disable-next-line no-eval
-  const magicDSL = eval(`(${localStorage.getItem('magicDSL')})`);
-  if (!magicDSL) {
-    save();
-  } else {
-    value.value = magicDSL;
-  }
-} catch (e) {
-  console.error(e);
-  save();
-}
+const { menu, deviceGroup, iframe, previewVisible } = useEditorMenu(value, save, themeChangeHandler);
 
 editorService.usePlugin({
   beforeDoAdd: (config: MNode, parent: MContainer) => {
@@ -247,8 +143,74 @@ editorService.usePlugin({
   },
 });
 
+propsService.usePlugin({
+  beforeFillConfig: (config) => [config, '100px'],
+});
+
+// 把当前历史记录持久化到 IndexedDB（按 DSL app id 隔离）。
+// 注意：beforeunload / pagehide 阶段无法 await 异步 IndexedDB 事务，能写多少算多少。
+const persistHistory = () => {
+  historyService.saveToIndexedDB().catch((error) => console.error('持久化历史记录失败', error));
+};
+
+// 历史变更后防抖持久化：页面 / 数据源 / 代码块任一栈变化都及时写入 IndexedDB。
+// 仅靠 beforeunload/pagehide 的异步写入不可靠（事务可能来不及提交），会导致刷新后最近一次
+// 编辑（尤其是本次会话新增的代码块 / 数据源历史）丢失，这里改为变更即落库以保证恢复完整。
+const schedulePersist = debounce(persistHistory, 500);
+
+// 进入页面时从 IndexedDB 恢复历史记录。此时 root 尚未设置（value 在 restore 之后才赋值），
+// 需显式传入待加载 DSL 的 id 以选中按 app 隔离的库；页面对齐由编辑器挂载后
+// select(defaultSelected) 设置当前活动页负责（历史栈在首次 push 时按需创建）。
+const restoreHistory = async () => {
+  try {
+    await historyService.restoreFromIndexedDB({ appId: dsl.id });
+  } catch (error) {
+    console.error('恢复历史记录失败', error);
+  }
+};
+
+const rootChangeHandler = (
+  _v: StoreState['root'],
+  _pV?: StoreState['root'],
+  { historySource }: { historySource?: HistoryOpSource } = {},
+) => {
+  if (historySource === 'initial') {
+    Object.values(historyService.state.steps).forEach((steps) => Object.values(steps).forEach(markStackSaved));
+  }
+};
+
+editorService.on('root-change', rootChangeHandler);
+
+onMounted(async () => {
+  await restoreHistory();
+  try {
+    // eslint-disable-next-line no-eval
+    const magicDSL = eval(`(${localStorage.getItem('magicDSL')})`);
+    if (!magicDSL) {
+      value.value = dsl;
+      save();
+    } else {
+      value.value = magicDSL;
+    }
+  } catch (e) {
+    console.error(e);
+    save();
+  }
+
+  historyService.on('change', schedulePersist);
+  window.addEventListener('beforeunload', persistHistory);
+  window.addEventListener('pagehide', persistHistory);
+});
+
 onBeforeUnmount(() => {
+  schedulePersist.cancel();
+  persistHistory();
+  historyService.off('change', schedulePersist);
+  window.removeEventListener('beforeunload', persistHistory);
+  window.removeEventListener('pagehide', persistHistory);
   editorService.removeAllPlugins();
+  editorService.off('root-change', rootChangeHandler);
+  document.documentElement.style.removeProperty('--el-color-primary');
 });
 
 const propsSubmitErrorHandler = async (e: any) => {

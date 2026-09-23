@@ -10,6 +10,9 @@
       ref="tree"
       :data="nodeData"
       :node-status-map="nodeStatusMap"
+      :indent="indent"
+      :next-level-indent-increment="nextLevelIndentIncrement"
+      :is-expandable="isExpandable"
       @node-dragover="handleDragOver"
       @node-dragstart="handleDragStart"
       @node-dragleave="handleDragLeave"
@@ -17,6 +20,7 @@
       @node-contextmenu="nodeContentMenuHandler"
       @node-mouseenter="mouseenterHandler"
       @node-click="nodeClickHandler"
+      @node-dblclick="dblclickHandler"
     >
       <template #tree-node-content="{ data: nodeData }">
         <slot name="layer-node-content" :data="nodeData"> </slot>
@@ -29,7 +33,9 @@
       </template>
 
       <template #tree-node-label="{ data: nodeData }">
-        <slot name="layer-node-label" :data="nodeData"></slot>
+        <slot name="layer-node-label" :data="nodeData">
+          <LayerNodeContent :data="nodeData"></LayerNodeContent>
+        </slot>
       </template>
     </Tree>
 
@@ -45,17 +51,27 @@
 </template>
 
 <script setup lang="ts">
-import { computed, inject, ref } from 'vue';
+import { computed, useTemplateRef } from 'vue';
 
+import type { MNode } from '@tmagic/core';
 import { TMagicScrollbar } from '@tmagic/design';
-import type { MNode } from '@tmagic/schema';
 
 import SearchInput from '@editor/components/SearchInput.vue';
 import Tree from '@editor/components/Tree.vue';
 import { useFilter } from '@editor/hooks/use-filter';
-import { LayerPanelSlots, MenuButton, MenuComponent, Services, TreeNodeData } from '@editor/type';
+import { useServices } from '@editor/hooks/use-services';
+import type {
+  CanDropInFunction,
+  CustomContentMenuFunction,
+  IsExpandableFunction,
+  LayerPanelSlots,
+  MenuButton,
+  MenuComponent,
+  TreeNodeData,
+} from '@editor/type';
 
 import LayerMenu from './LayerMenu.vue';
+import LayerNodeContent from './LayerNodeContent.vue';
 import LayerNodeTool from './LayerNodeTool.vue';
 import { useClick } from './use-click';
 import { useDrag } from './use-drag';
@@ -68,21 +84,33 @@ defineOptions({
   name: 'MEditorLayerPanel',
 });
 
-defineProps<{
+const props = defineProps<{
   layerContentMenu: (MenuButton | MenuComponent)[];
-  customContentMenu?: (menus: (MenuButton | MenuComponent)[], type: string) => (MenuButton | MenuComponent)[];
+  indent?: number;
+  nextLevelIndentIncrement?: number;
+  customContentMenu: CustomContentMenuFunction;
+  /** 自定义判断组件树节点是否可展开（即是否要展示为拥有子节点的形态）的函数 */
+  isExpandable?: IsExpandableFunction;
+  /** 自定义判断当前拖动节点是否可以拖入目标节点内部的函数，返回 false 则禁止拖入 */
+  canDropIn?: CanDropInFunction;
+  /** 组件树节点双击前的钩子函数，返回 false 则阻止默认的双击行为 */
+  beforeNodeDblclick?: (_event: MouseEvent, _data: TreeNodeData) => Promise<boolean | void> | boolean | void;
 }>();
 
-const services = inject<Services>('services');
-const editorService = services?.editorService;
+const emit = defineEmits<{
+  'node-dblclick': [event: MouseEvent, data: TreeNodeData];
+}>();
 
-const tree = ref<InstanceType<typeof Tree>>();
+const services = useServices();
+const { editorService } = services;
 
-const page = computed(() => editorService?.get('page'));
+const treeRef = useTemplateRef<InstanceType<typeof Tree>>('tree');
+
+const page = computed(() => editorService.get('page'));
 const nodeData = computed<TreeNodeData[]>(() => (!page.value ? [] : [page.value]));
 
 const { nodeStatusMap } = useNodeStatus(services);
-const { isCtrlKeyDown } = useKeybinding(services, tree);
+const { isCtrlKeyDown } = useKeybinding(services, treeRef);
 
 const filterNodeMethod = (v: string, data: MNode): boolean => {
   let name = '';
@@ -92,7 +120,7 @@ const filterNodeMethod = (v: string, data: MNode): boolean => {
     name = 'container';
   }
 
-  return `${data.id}${name}${data.type}`.includes(v);
+  return `${data.id}${name}${data.type || ''}`.toLocaleLowerCase().includes(v.toLocaleLowerCase());
 };
 
 const { filterTextChangeHandler } = useFilter(nodeData, nodeStatusMap, filterNodeMethod);
@@ -108,12 +136,27 @@ const collapseAllHandler = () => {
   }
 };
 
-const { handleDragStart, handleDragEnd, handleDragLeave, handleDragOver } = useDrag(services);
+const { handleDragStart, handleDragEnd, handleDragLeave, handleDragOver } = useDrag(services, {
+  canDropIn: (sourceIds, targetId) => props.canDropIn?.(sourceIds, targetId, 'layer'),
+});
 
+// 右键菜单
+const menuRef = useTemplateRef<InstanceType<typeof LayerMenu>>('menu');
 const {
-  menu,
   nodeClickHandler,
+  nodeDblclickHandler,
   nodeContentMenuHandler,
   highlightHandler: mouseenterHandler,
-} = useClick(services, isCtrlKeyDown, nodeStatusMap);
+} = useClick(services, isCtrlKeyDown, nodeStatusMap, menuRef);
+
+const dblclickHandler = async (event: MouseEvent, data: TreeNodeData) => {
+  if (props.beforeNodeDblclick) {
+    const result = await props.beforeNodeDblclick(event, data);
+    if (result === false) return;
+  }
+
+  nodeDblclickHandler(event, data);
+
+  emit('node-dblclick', event, data);
+};
 </script>
