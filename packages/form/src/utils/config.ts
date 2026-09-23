@@ -1,7 +1,7 @@
 /*
  * Tencent is pleased to support the open source community by making TMagicEditor available.
  *
- * Copyright (C) 2023 THL A29 Limited, a Tencent company.  All rights reserved.
+ * Copyright (C) 2025 Tencent.  All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,12 +16,19 @@
  * limitations under the License.
  */
 
+import { ref } from 'vue';
+
 let $MAGIC_FORM = {} as any;
+// 用 ref 持有 flat 全局开关：const 引用本身不可变，符合 `import/no-mutable-exports`；
+// 通过 `.value` 改值仍保持模块级响应式语义，与 editor/plugin.ts、design/index.ts 里
+// 的同名变量写法对齐。
+const isGlobalFlat = ref(false);
 
 const setConfig = (option: any): void => {
   $MAGIC_FORM = option;
+  isGlobalFlat.value = option.flat ?? false;
 };
 
 const getConfig = <T = unknown>(key: string): T => $MAGIC_FORM[key];
 
-export { getConfig, setConfig };
+export { getConfig, isGlobalFlat, setConfig };

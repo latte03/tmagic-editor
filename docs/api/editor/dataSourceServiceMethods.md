@@ -2,30 +2,731 @@
 
 ## get
 
+- **参数：**
+  - `{StateKey}` name 状态键名
+
+- **返回：**
+  - `{any}` 对应的状态值
+
+- **详情：**
+
+  获取数据源服务的内部状态
+
+  可用的状态键：
+  - `datasourceTypeList`: 数据源类型列表
+  - `dataSources`: 当前数据源列表
+  - `editable`: 是否可编辑
+  - `configs`: 数据源表单配置
+  - `values`: 数据源默认值
+  - `events`: 数据源事件列表
+  - `methods`: 数据源方法列表
+
+- **示例：**
+
+```js
+import { dataSourceService } from "@tmagic/editor";
+
+const dataSources = dataSourceService.get("dataSources");
+console.log(dataSources);
+```
+
+## set
+
+- **参数：**
+  - `{StateKey}` name 状态键名
+  - `{any}` value 状态值
+
+- **返回：**
+  - `{void}`
+
+- **详情：**
+
+  设置数据源服务的内部状态
+
+- **示例：**
+
+```js
+import { dataSourceService } from "@tmagic/editor";
+
+dataSourceService.set("editable", false);
+```
+
 ## getFormConfig
+
+- **[扩展支持](../../guide/editor-expand#行为扩展)：** 是
+
+- **参数：**
+  - `{string}` type 数据源类型，默认为 'base'
+
+- **返回：**
+  - {`FormConfig`} 表单配置
+
+  ::: details 查看 FormConfig 及关联类型定义
+  <<< @/../packages/form-schema/src/base.ts#FormConfig{ts}
+
+  <<< @/../packages/form-schema/src/base.ts#FormItemConfig{ts}
+
+  <<< @/../packages/form-schema/src/base.ts#ChildConfig{ts}
+
+  <<< @/../packages/form-schema/src/base.ts#DynamicTypeConfig{ts}
+
+  <<< @/../packages/form-schema/src/base.ts#FormItem{ts}
+  :::
+
+- **详情：**
+
+  获取指定类型数据源的表单配置
+
+- **示例：**
+
+```js
+import { dataSourceService } from "@tmagic/editor";
+
+const config = dataSourceService.getFormConfig("http");
+console.log(config);
+```
 
 ## setFormConfig
 
+- **[扩展支持](../../guide/editor-expand#行为扩展)：** 是
+
+- **参数：**
+  - `{string}` type 数据源类型
+  - {`FormConfig`} config 表单配置
+
+- **返回：**
+  - `{void}`
+
+- **详情：**
+
+  设置指定类型数据源的表单配置
+
+- **示例：**
+
+```js
+import { dataSourceService } from "@tmagic/editor";
+
+dataSourceService.setFormConfig("http", [
+  {
+    name: "url",
+    text: "请求地址",
+    type: "text",
+  },
+  {
+    name: "method",
+    text: "请求方法",
+    type: "select",
+    options: [
+      { text: "GET", value: "GET" },
+      { text: "POST", value: "POST" },
+    ],
+  },
+]);
+```
+
 ## getFormValue
+
+- **[扩展支持](../../guide/editor-expand#行为扩展)：** 是
+
+- **参数：**
+  - `{string}` type 数据源类型，默认为 'base'
+
+- **返回：**
+  - {Partial<`DataSourceSchema`>} 数据源默认值
+
+  ::: details 查看 DataSourceSchema 及关联类型定义
+  <<< @/../packages/schema/src/index.ts#DataSourceSchema{ts}
+
+  <<< @/../packages/schema/src/index.ts#DataSchema{ts}
+
+  <<< @/../packages/schema/src/index.ts#MockSchema{ts}
+
+  <<< @/../packages/schema/src/index.ts#CodeBlockContent{ts}
+
+  <<< @/../packages/schema/src/index.ts#CodeParam{ts}
+
+  <<< @/../packages/schema/src/index.ts#EventConfig{ts}
+
+  <<< @/../packages/schema/src/index.ts#JsEngine{ts}
+  :::
+
+- **详情：**
+
+  获取指定类型数据源的默认值
+
+- **示例：**
+
+```js
+import { dataSourceService } from "@tmagic/editor";
+
+const defaultValue = dataSourceService.getFormValue("http");
+console.log(defaultValue);
+```
 
 ## setFormValue
 
+- **[扩展支持](../../guide/editor-expand#行为扩展)：** 是
+
+- **参数：**
+  - `{string}` type 数据源类型
+  - {Partial<`DataSourceSchema`>} value 数据源默认值
+
+- **返回：**
+  - `{void}`
+
+- **详情：**
+
+  设置指定类型数据源的默认值
+
+- **示例：**
+
+```js
+import { dataSourceService } from "@tmagic/editor";
+
+dataSourceService.setFormValue("http", {
+  type: "http",
+  method: "GET",
+  url: "",
+});
+```
+
 ## getFormEvent
+
+- **[扩展支持](../../guide/editor-expand#行为扩展)：** 是
+
+- **参数：**
+  - `{string}` type 数据源类型，默认为 'base'
+
+- **返回：**
+  - {`EventOption`[]} 事件列表
+
+  ::: details 查看 EventOption 类型定义
+  <<< @/../packages/core/src/utils.ts#EventOption{ts}
+  :::
+
+- **详情：**
+
+  获取指定类型数据源的事件列表
+
+- **示例：**
+
+```js
+import { dataSourceService } from "@tmagic/editor";
+
+const events = dataSourceService.getFormEvent("http");
+console.log(events);
+```
 
 ## setFormEvent
 
+- **[扩展支持](../../guide/editor-expand#行为扩展)：** 是
+
+- **参数：**
+  - `{string}` type 数据源类型
+  - {`EventOption`[]} value 事件列表
+
+- **返回：**
+  - `{void}`
+
+- **详情：**
+
+  设置指定类型数据源的事件列表
+
+- **示例：**
+
+```js
+import { dataSourceService } from "@tmagic/editor";
+
+dataSourceService.setFormEvent("http", [
+  { label: "请求成功", value: "success" },
+  { label: "请求失败", value: "error" },
+]);
+```
+
 ## getFormMethod
+
+- **[扩展支持](../../guide/editor-expand#行为扩展)：** 是
+
+- **参数：**
+  - `{string}` type 数据源类型，默认为 'base'
+
+- **返回：**
+  - {`EventOption`[]} 方法列表
+
+- **详情：**
+
+  获取指定类型数据源的方法列表
+
+- **示例：**
+
+```js
+import { dataSourceService } from "@tmagic/editor";
+
+const methods = dataSourceService.getFormMethod("http");
+console.log(methods);
+```
 
 ## setFormMethod
 
+- **[扩展支持](../../guide/editor-expand#行为扩展)：** 是
+
+- **参数：**
+  - `{string}` type 数据源类型
+  - {`EventOption`[]} value 方法列表
+
+- **返回：**
+  - `{void}`
+
+- **详情：**
+
+  设置指定类型数据源的方法列表
+
+- **示例：**
+
+```js
+import { dataSourceService } from "@tmagic/editor";
+
+dataSourceService.setFormMethod("http", [
+  { label: "发起请求", value: "request" },
+  { label: "重试", value: "retry" },
+]);
+```
+
 ## add
+
+- **[扩展支持](../../guide/editor-expand#行为扩展)：** 是
+
+- **参数：**
+  - {`DataSourceSchema`} config 数据源配置
+  - `{Object}` options 可选配置
+    - `{boolean}` doNotPushHistory 是否不写入历史记录（默认 false）
+    - `{string}` historyDescription 见 [editorService 历史记录相关 options](./editorServiceMethods.md#历史记录相关-options)
+    - `{HistoryOpSource}` historySource 见 [editorService 历史记录相关 options](./editorServiceMethods.md#历史记录相关-options)
+
+- **返回：**
+  - {`DataSourceSchema`} 添加后的数据源配置
+
+- **详情：**
+
+  添加一个数据源，如果配置中没有id或id已存在，会自动生成新的id
+
+  ::: tip
+  添加成功会自动调用 `historyService.push('dataSource', step, id)` 入栈一条 `oldSchema=null` 的新增记录，
+  参见 [historyService.push](./historyServiceMethods.md#push)。
+  传入 `doNotPushHistory: true` 可跳过写入历史栈，常用于批量导入、外部同步等非用户操作场景。
+  :::
+
+- **示例：**
+
+```js
+import { dataSourceService } from "@tmagic/editor";
+
+const newDs = dataSourceService.add({
+  type: "http",
+  title: "用户信息",
+  url: "/api/user",
+  method: "GET",
+});
+
+console.log(newDs.id); // 自动生成的id
+```
 
 ## update
 
+- **[扩展支持](../../guide/editor-expand#行为扩展)：** 是
+
+- **参数：**
+  - {`DataSourceSchema`} config 数据源配置
+  - `{Object}` options 可选配置
+    - {`ChangeRecord`[]} changeRecords 变更记录
+    - `{boolean}` doNotPushHistory 是否不写入历史记录（默认 false）
+    - `{string}` historyDescription 见 [editorService 历史记录相关 options](./editorServiceMethods.md#历史记录相关-options)
+    - `{HistoryOpSource}` historySource 见 [editorService 历史记录相关 options](./editorServiceMethods.md#历史记录相关-options)
+
+  ::: details 查看 ChangeRecord 类型定义
+  <<< @/../packages/form-schema/src/base.ts#ChangeRecord{ts}
+  :::
+
+- **返回：**
+  - {`DataSourceSchema`} 更新后的数据源配置
+
+- **详情：**
+
+  更新数据源
+
+  ::: tip
+  更新成功会自动调用 `historyService.push('dataSource', step, id)` 入栈一条 `oldSchema` / `newSchema`
+  均为对应 schema 的更新记录，传入的 `changeRecords` 也会一并写进 step；撤销/重做时调用方可据此按
+  `propPath` 局部回放，缺省才退化为整 schema 替换。传入 `doNotPushHistory: true` 可跳过写入历史栈。
+  :::
+
+- **示例：**
+
+```js
+import { dataSourceService } from "@tmagic/editor";
+
+const updatedDs = dataSourceService.update({
+  id: "ds_123",
+  type: "http",
+  title: "用户详情",
+  url: "/api/user/detail",
+});
+
+console.log(updatedDs);
+```
+
 ## remove
+
+- **[扩展支持](../../guide/editor-expand#行为扩展)：** 是
+
+- **参数：**
+  - `{string}` id 数据源id
+  - `{Object}` options 可选配置
+    - `{boolean}` doNotPushHistory 是否不写入历史记录（默认 false）
+    - `{string}` historyDescription 见 [editorService 历史记录相关 options](./editorServiceMethods.md#历史记录相关-options)
+    - `{HistoryOpSource}` historySource 见 [editorService 历史记录相关 options](./editorServiceMethods.md#历史记录相关-options)
+
+- **返回：**
+  - `{void}`
+
+- **详情：**
+
+  删除指定id的数据源
+
+  ::: tip
+  对实际存在的数据源会自动调用 `historyService.push('dataSource', step, id)` 入栈一条 `newSchema=null`
+  的删除记录；不存在的 id 不会入历史。传入 `doNotPushHistory: true` 也可显式跳过写入历史栈。
+  :::
+
+- **示例：**
+
+```js
+import { dataSourceService } from "@tmagic/editor";
+
+dataSourceService.remove("ds_123");
+```
+
+## addAndGetHistoryId
+
+- **参数：** 同 [add](#add)
+
+- **返回：**
+  - {[`DslOpWithHistoryIdsResult<DataSourceSchema>`](./editorServiceMethods.md#历史记录-uuid-与-andgethistoryid)}
+    - `result`：同 [add](#add) 的返回值（新增的数据源配置）
+    - `historyIds`：本次写入历史记录的 uuid 列表；未写入历史（`doNotPushHistory: true` 等）时为 `[]`
+
+- **详情：**
+
+  与 [add](#add) 行为完全一致，并在返回值中额外提供 `historyIds`，可用于精确引用 / 定位该条历史记录。
+  参见 [editorService 历史记录 uuid 与 \*AndGetHistoryId](./editorServiceMethods.md#历史记录-uuid-与-andgethistoryid)。
+
+- **示例：**
+
+```js
+import { dataSourceService } from "@tmagic/editor";
+
+const { result, historyIds } = dataSourceService.addAndGetHistoryId({
+  type: "http",
+  title: "用户信息",
+  url: "/api/user",
+});
+console.log(result); // 新增的数据源配置
+console.log(historyIds); // 本次新增对应的历史记录 uuid 列表，或 []
+```
+
+## updateAndGetHistoryId
+
+- **参数：** 同 [update](#update)
+
+- **返回：**
+  - {[`DslOpWithHistoryIdsResult<DataSourceSchema>`](./editorServiceMethods.md#历史记录-uuid-与-andgethistoryid)}
+    - `result`：同 [update](#update) 的返回值（更新后的数据源配置）
+    - `historyIds`：本次写入历史记录的 uuid 列表；未写入历史时为 `[]`
+
+- **详情：**
+
+  与 [update](#update) 行为完全一致，并在返回值中额外提供 `historyIds`
+
+## removeAndGetHistoryId
+
+- **参数：** 同 [remove](#remove)
+
+- **返回：**
+  - {[`DslOpWithHistoryIdsResult<void>`](./editorServiceMethods.md#历史记录-uuid-与-andgethistoryid)}
+    - `historyIds`：本次写入历史记录的 uuid 列表；删除的 id 不存在或未写入历史时为 `[]`
+
+- **详情：**
+
+  与 [remove](#remove) 行为完全一致，并在返回值中额外提供 `historyIds`
+
+## revertById
+
+- **参数：**
+  - `{string[]}` uuids 目标历史记录的 uuid 列表（通常由 [addAndGetHistoryId](#addandgethistoryid) 等方法返回的 `historyIds`）
+
+- **返回：**
+  - {(`DataSourceStepValue` | null)[]} 与入参同序的回滚结果列表，某项失败时为 `null`
+
+- **详情：**
+
+  通过历史记录 uuid「回滚」数据源历史步骤（类 git revert 语义），语义同按 `(id, index)` 回滚，
+  仅无需调用方再传 `dataSourceId` 与 `index`。**按数组顺序依次回滚**。
+  参见 [editorService 历史记录 uuid 与 \*AndGetHistoryId](./editorServiceMethods.md#历史记录-uuid-与-andgethistoryid)。
+
+- **示例：**
+
+```js
+import { dataSourceService } from "@tmagic/editor";
+
+const { historyIds } = dataSourceService.addAndGetHistoryId({ type: "http", title: "用户信息" });
+if (historyIds.length) {
+  dataSourceService.revertById(historyIds);
+}
+```
+
+## createId
+
+- **[扩展支持](../../guide/editor-expand#行为扩展)：** 是
+
+- **参数：** 无
+
+- **返回：**
+  - `{string}` 生成的唯一id
+
+- **详情：**
+
+  生成一个唯一的数据源id，格式为 `ds_` + guid
+
+- **示例：**
+
+```js
+import { dataSourceService } from "@tmagic/editor";
+
+const id = dataSourceService.createId();
+console.log(id); // 'ds_xxx-xxx-xxx'
+```
 
 ## getDataSourceById
 
+- **参数：**
+  - `{string}` id 数据源id
+
+- **返回：**
+  - {`DataSourceSchema` | undefined} 数据源配置
+
+- **详情：**
+
+  根据id获取数据源配置
+
+- **示例：**
+
+```js
+import { dataSourceService } from "@tmagic/editor";
+
+const ds = dataSourceService.getDataSourceById("ds_123");
+console.log(ds);
+```
+
+## undo
+
+- **参数：**
+  - `{Id}` id 数据源id
+
+- **返回：**
+  - {`DataSourceStepValue` | null} 撤销的 step；栈不存在或已无可撤销时返回 `null`
+
+- **详情：**
+
+  撤销指定数据源的最近一次变更。内部根据 [historyService](./historyServiceMethods.md) 取出 step 后，
+  复用 [add](#add) / [update](#update) / [remove](#remove) 写回，并自动带上 `doNotPushHistory: true`，
+  确保不会再次入栈。
+
+  写回会触发对应的 `add` / `update` / `remove` 事件，编辑器内部据此重新维护数据源相关的依赖收集
+  （`DepTargetType.DATA_SOURCE` / `DATA_SOURCE_COND` / `DATA_SOURCE_METHOD`），无需调用方额外处理。
+
+  对于带有 `changeRecords` 的更新 step，会按 `propPath` 局部 patch 当前数据源；缺省才退化为整 schema 替换，
+  避免冲掉同节点上的其它无关变更。
+
+- **示例：**
+
+```js
+import { dataSourceService } from "@tmagic/editor";
+
+if (dataSourceService.canUndo("ds_123")) {
+  dataSourceService.undo("ds_123");
+}
+```
+
+## redo
+
+- **参数：**
+  - `{Id}` id 数据源id
+
+- **返回：**
+  - {`DataSourceStepValue` | null} 重做的 step；栈不存在或已无可重做时返回 `null`
+
+- **详情：**
+
+  重做指定数据源的下一次变更。其它行为同 [undo](#undo)。
+
+## canUndo
+
+- **参数：**
+  - `{Id}` id 数据源id
+
+- **返回：**
+  - `{boolean}`
+
+- **详情：**
+
+  当前指定数据源是否可撤销，等价于 `historyService.canUndo('dataSource', id)`。
+
+## canRedo
+
+- **参数：**
+  - `{Id}` id 数据源id
+
+- **返回：**
+  - `{boolean}`
+
+- **详情：**
+
+  当前指定数据源是否可重做，等价于 `historyService.canRedo('dataSource', id)`。
+
+## copyWithRelated
+
+- **参数：**
+  - {`MNode` | `MNode`[]} config 组件节点配置
+  - `{TargetOptions}` collectorOptions 可选的收集器配置
+
+  ::: details 查看 MNode 及关联类型定义
+  <<< @/../packages/schema/src/index.ts#MNode{ts}
+
+  <<< @/../packages/schema/src/index.ts#MComponent{ts}
+
+  <<< @/../packages/schema/src/index.ts#MContainer{ts}
+
+  <<< @/../packages/schema/src/index.ts#MIteratorContainer{ts}
+
+  <<< @/../packages/schema/src/index.ts#MPage{ts}
+
+  <<< @/../packages/schema/src/index.ts#MApp{ts}
+
+  <<< @/../packages/schema/src/index.ts#MPageFragment{ts}
+  :::
+
+- **返回：**
+  - `{void}`
+
+- **详情：**
+
+  复制组件时会带上组件关联的数据源，将关联的数据源存储到 localStorage
+
+- **示例：**
+
+```js
+import { dataSourceService, editorService } from "@tmagic/editor";
+
+const node = editorService.get("node");
+dataSourceService.copyWithRelated(node);
+```
+
+## paste
+
+- **参数：** 无
+
+- **返回：**
+  - `{void}`
+
+- **详情：**
+
+  粘贴数据源，从 localStorage 中读取复制的数据源并添加到当前页面
+
+  如果数据源id已存在，则不会覆盖
+
+- **示例：**
+
+```js
+import { dataSourceService } from "@tmagic/editor";
+
+dataSourceService.paste();
+```
+
 ## resetState
 
+- **参数：** 无
+
+- **返回：**
+  - `{void}`
+
+- **详情：**
+
+  重置数据源服务状态，清空所有数据源
+
+- **示例：**
+
+```js
+import { dataSourceService } from "@tmagic/editor";
+
+dataSourceService.resetState();
+```
+
 ## destroy
+
+- **参数：** 无
+
+- **返回：**
+  - `{void}`
+
+- **详情：**
+
+  销毁 dataSourceService，移除所有事件监听并重置状态
+
+- **示例：**
+
+```js
+import { dataSourceService } from "@tmagic/editor";
+
+dataSourceService.destroy();
+```
+
+## usePlugin
+
+- **详情：**
+
+usePlugin支持更加灵活更加细致的扩展， 上述方法中标记有`扩展支持： 是`的方法都支持使用usePlugin扩展
+
+每个支持扩展的方法都支持定制before、after两个hook来干预原有方法的行为，before可以用于修改传入参数，after可以用于修改返回的值
+
+- **示例：**
+
+```js
+import { dataSourceService } from "@tmagic/editor";
+
+dataSourceService.usePlugin({
+  beforeAdd(config) {
+    console.log("添加前:", config);
+    return [config];
+  },
+
+  afterAdd(result, config) {
+    console.log("添加后:", result);
+    return result;
+  },
+});
+```
+
+## removeAllPlugins
+
+- **详情：**
+
+删掉当前设置的所有扩展
+
+- **示例：**
+
+```js
+import { dataSourceService } from "@tmagic/editor";
+
+dataSourceService.removeAllPlugins();
+```
+

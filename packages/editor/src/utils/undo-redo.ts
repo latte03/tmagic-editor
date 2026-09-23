@@ -1,7 +1,7 @@
 /*
  * Tencent is pleased to support the open source community by making TMagicEditor available.
  *
- * Copyright (C) 2023 THL A29 Limited, a Tencent company.  All rights reserved.
+ * Copyright (C) 2025 Tencent.  All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,16 +18,80 @@
 
 import { cloneDeep } from 'lodash-es';
 
+// #region SerializedUndoRedo
+/**
+ * UndoRedo 栈的可序列化快照，用于持久化（如写入 IndexedDB）后再还原。
+ */
+export interface SerializedUndoRedo<T = any> {
+  /** 栈内全部元素（按时间正序，索引 0 为最早一步）。 */
+  elementList: T[];
+  /** 游标位置（已应用步骤数量）。 */
+  listCursor: number;
+  /** 栈容量上限。 */
+  listMaxSize: number;
+}
+// #endregion SerializedUndoRedo
+
+// #region UndoRedo
 export class UndoRedo<T = any> {
+  /**
+   * 由 {@link UndoRedo.serialize} 产出的快照重建一个 UndoRedo 实例。
+   * 游标会被夹紧到 [0, length] 区间，避免脏数据导致越界。
+   *
+   * @param options.isSavedStep 可选谓词：若提供，则把游标定位到「最近一条满足该谓词的记录」之后
+   *   （即恢复到最近一个已保存点）；找不到匹配记录时退回快照中的原游标。
+   */
+  public static fromSerialized<T = any>(
+    data: SerializedUndoRedo<T>,
+    options: { isSavedStep?: (element: T) => boolean } = {},
+  ): UndoRedo<T> {
+    const undoRedo = new UndoRedo<T>(data.listMaxSize);
+    const list = Array.isArray(data.elementList) ? data.elementList.map((item) => cloneDeep(item)) : [];
+    let cursor = Number.isFinite(data.listCursor) ? data.listCursor : list.length;
+
+    // 本地数据同样遵循容量上限：超出时裁掉最旧的记录（与 pushElement 的 shift 行为一致），并同步回退游标。
+    const overflow = list.length - undoRedo.listMaxSize;
+    if (overflow > 0) {
+      list.splice(0, overflow);
+      cursor -= overflow;
+    }
+
+    // 若指定了「已保存」谓词，则把游标移动到最近一条已保存记录之后；在裁剪后的 list 上查找以保证索引正确。
+    if (options.isSavedStep) {
+      for (let i = list.length - 1; i >= 0; i--) {
+        if (options.isSavedStep(list[i])) {
+          cursor = i + 1;
+          break;
+        }
+      }
+    }
+
+    undoRedo.elementList = list;
+    undoRedo.listCursor = Math.max(0, Math.min(cursor, list.length));
+    return undoRedo;
+  }
+
   private elementList: T[];
   private listCursor: number;
   private listMaxSize: number;
 
-  constructor(listMaxSize = 20) {
+  constructor(listMaxSize = 100) {
     const minListMaxSize = 2;
     this.elementList = [];
     this.listCursor = 0;
     this.listMaxSize = listMaxSize > minListMaxSize ? listMaxSize : minListMaxSize;
+  }
+
+  /**
+   * 导出当前栈的可序列化快照（深克隆，避免外部改动污染内部状态）。
+   * 配合 {@link UndoRedo.fromSerialized} 可在持久化后完整还原撤销/重做栈。
+   */
+  public serialize(): SerializedUndoRedo<T> {
+    return {
+      elementList: this.elementList.map((item) => cloneDeep(item)),
+      listCursor: this.listCursor,
+      listMaxSize: this.listMaxSize,
+    };
   }
 
   public pushElement(element: T): void {
@@ -42,29 +106,30 @@ export class UndoRedo<T = any> {
   }
 
   public canUndo(): boolean {
-    return this.listCursor > 1;
+    return this.listCursor > 0;
   }
 
-  // 返回undo后的当前元素
+  /** 返回被撤销的操作 */
   public undo(): T | null {
     if (!this.canUndo()) {
       return null;
     }
     this.listCursor -= 1;
-    return this.getCurrentElement();
+    return cloneDeep(this.elementList[this.listCursor]);
   }
 
   public canRedo() {
     return this.elementList.length > this.listCursor;
   }
 
-  // 返回redo后的当前元素
+  /** 返回被重做的操作 */
   public redo(): T | null {
     if (!this.canRedo()) {
       return null;
     }
+    const element = cloneDeep(this.elementList[this.listCursor]);
     this.listCursor += 1;
-    return this.getCurrentElement();
+    return element;
   }
 
   public getCurrentElement(): T | null {
@@ -73,4 +138,53 @@ export class UndoRedo<T = any> {
     }
     return cloneDeep(this.elementList[this.listCursor - 1]);
   }
+
+  /**
+   * 用 `element` 替换当前游标所在元素（cursor - 1），并丢弃其后的重做尾部（与 {@link pushElement} 的丢尾一致），
+   * 游标位置保持不变（元素数量不增）。cursor 为 0（无已应用元素）时不做任何操作并返回 false。
+   * 用于「连续同类记录合并」等就地替换最新一条的场景。
+   */
+  public replaceCurrentElement(element: T): boolean {
+    if (this.listCursor < 1) return false;
+    this.elementList.splice(this.listCursor - 1, this.elementList.length - (this.listCursor - 1), cloneDeep(element));
+    return true;
+  }
+
+  /**
+   * 对当前游标所在元素（cursor - 1）做就地更新；cursor 为 0（全部已撤销）时不做任何操作。
+   * 用于给「当前步骤」打标记（如标记为已保存）等元数据写入场景。
+   */
+  public updateCurrentElement(updater: (element: T) => void): void {
+    if (this.listCursor < 1) return;
+    updater(this.elementList[this.listCursor - 1]);
+  }
+
+  /** 对栈内全部元素做就地更新。用于批量清理元数据（如清空所有元素的已保存标记）。 */
+  public updateElements(updater: (element: T, index: number) => void): void {
+    this.elementList.forEach(updater);
+  }
+
+  /**
+   * 返回栈内全部元素的浅克隆数组（按时间顺序，索引 0 为最早一步）。
+   * 仅用于历史面板等只读展示场景，不应直接修改返回值。
+   */
+  public getElementList(): T[] {
+    return this.elementList.slice();
+  }
+
+  /**
+   * 当前游标位置：表示已应用的步骤数量。
+   * - cursor === 0 表示全部已撤销
+   * - cursor === length 表示已重做到末尾
+   * 历史面板用于区分"已应用 / 已撤销"两段。
+   */
+  public getCursor(): number {
+    return this.listCursor;
+  }
+
+  /** 栈内总步数。 */
+  public getLength(): number {
+    return this.elementList.length;
+  }
 }
+// #endregion UndoRedo

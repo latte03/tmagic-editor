@@ -1,65 +1,64 @@
 <template>
   <div class="m-fields-event-select">
-    <m-form-table
+    <MTable
       v-if="isOldVersion"
-      ref="eventForm"
       name="events"
       :size="size"
       :disabled="disabled"
       :model="model"
+      :last-values="lastValues"
+      :is-compare="isCompareMode"
       :config="tableConfig"
       @change="onChangeHandler"
-    ></m-form-table>
+    ></MTable>
 
-    <div v-else class="fullWidth">
-      <TMagicButton class="create-button" type="primary" :size="size" :disabled="disabled" @click="addEvent()"
-        >添加事件</TMagicButton
-      >
-      <MPanel
-        v-for="(cardItem, index) in model[name]"
-        :key="index"
+    <div v-else class="fullWidth event-select-container">
+      <div class="event-select-header">
+        <div class="event-select-title">事件配置</div>
+      </div>
+      <MGroupList
+        :config="eventConfig"
+        :name="name"
         :disabled="disabled"
+        :model="model"
+        :last-values="lastValues"
+        :is-compare="isCompareMode"
+        :prop="prop"
         :size="size"
-        :config="actionsConfig"
-        :model="cardItem"
-        :label-width="config.labelWidth || '100px'"
         @change="onChangeHandler"
       >
-        <template #header>
-          <MContainer
-            class="fullWidth"
-            :config="eventNameConfig"
-            :model="cardItem"
-            :disabled="disabled"
-            :size="size"
-            @change="onChangeHandler"
-          ></MContainer>
-          <TMagicButton
-            style="color: #f56c6c"
-            link
-            :icon="Delete"
-            :disabled="disabled"
-            :size="size"
-            @click="removeEvent(index)"
-          ></TMagicButton>
+        <template #title="{ model: itemModel, lastValues: itemLastValues, prop: itemProp }">
+          <div class="event-item-header">
+            <MFormContainer
+              class="fullWidth"
+              :config="eventNameConfig"
+              :model="itemModel"
+              :last-values="itemLastValues"
+              :is-compare="isCompareMode"
+              :disabled="disabled"
+              :size="size"
+              :prop="itemProp"
+              @change="onChangeHandler"
+            ></MFormContainer>
+          </div>
         </template>
-      </MPanel>
+      </MGroupList>
     </div>
   </div>
 </template>
 
 <script lang="ts" setup>
-import { computed, inject } from 'vue';
-import { Delete } from '@element-plus/icons-vue';
-import { has } from 'lodash-es';
+import { computed } from 'vue';
 
-import type { EventOption } from '@tmagic/core';
-import { TMagicButton } from '@tmagic/design';
-import type { FieldProps, FormState, PanelConfig } from '@tmagic/form';
-import { MContainer, MPanel } from '@tmagic/form';
-import { ActionType } from '@tmagic/schema';
+import type { ContainerChangeEventData, EventSelectConfig, FieldProps } from '@tmagic/form';
+import { MContainer as MFormContainer, MGroupList, MTable } from '@tmagic/form';
 
-import type { CodeSelectColConfig, DataSourceMethodSelectConfig, EventSelectConfig, Services } from '@editor/type';
+import {
+  createEventNameConfig,
+  createEventSelectConfig,
+  createLegacyTableConfig,
+  isLegacyEventValue,
+} from '@editor/fields/configs/eventSelect';
 
 defineOptions({
   name: 'MFieldsEventSelect',
@@ -67,214 +66,29 @@ defineOptions({
 
 const props = defineProps<FieldProps<EventSelectConfig>>();
 
-const emit = defineEmits(['change']);
+const emit = defineEmits<{
+  change: [v: any, eventData?: ContainerChangeEventData];
+}>();
 
-const services = inject<Services>('services');
+const tableConfig = computed(() => createLegacyTableConfig(props.config));
 
-const editorService = services?.editorService;
-const dataSourceService = services?.dataSourceService;
-const eventsService = services?.eventsService;
-const codeBlockService = services?.codeBlockService;
+const eventNameConfig = computed(() => createEventNameConfig(props.config));
 
-// 事件名称下拉框表单配置
-const eventNameConfig = computed(() => {
-  const defaultEventNameConfig = {
-    name: 'name',
-    text: '事件',
-    type: 'select',
-    labelWidth: '40px',
-    options: (mForm: FormState, { formValue }: any) => {
-      let events: EventOption[] = [];
+const eventConfig = computed(() => createEventSelectConfig(props.config, props.name));
 
-      if (!eventsService || !dataSourceService) return events;
+const isOldVersion = computed(() => isLegacyEventValue(props.model[props.name]));
 
-      if (props.config.src === 'component') {
-        events = eventsService.getEvent(formValue.type);
-      } else if (props.config.src === 'datasource') {
-        events = dataSourceService.getFormEvent(formValue.type);
-      }
+/**
+ * 对比模式判定：
+ *
+ * event-select 内部是事件列表 group-list。父级 `MFormContainer` 已将其归入「自接管对比字段」
+ * （见 Container.vue 的 `SELF_DIFF_FIELD_TYPES`），对比时只渲染一次本组件，并把 `is-compare` /
+ * `lastValues` 透传给内部 MGroupList 与 title slot 里的事件名表单。
+ *
+ * 仅当存在历史值时才启用对比，避免 lastValues 缺失时退化为「全部新增」的空对比。
+ */
+const isCompareMode = computed(() => Boolean(props.isCompare && props.lastValues));
 
-      return events.map((option) => ({
-        text: option.label,
-        value: option.value,
-      }));
-    },
-  };
-  return { ...defaultEventNameConfig, ...props.config.eventNameConfig };
-});
-
-// 联动类型
-const actionTypeConfig = computed(() => {
-  const defaultActionTypeConfig = {
-    name: 'actionType',
-    text: '联动类型',
-    type: 'select',
-    defaultValue: ActionType.COMP,
-    options: () => [
-      {
-        text: '组件',
-        label: '组件',
-        value: ActionType.COMP,
-      },
-      {
-        text: '代码',
-        label: '代码',
-        disabled: !Object.keys(codeBlockService?.getCodeDsl() || {}).length,
-        value: ActionType.CODE,
-      },
-      {
-        text: '数据源',
-        label: '数据源',
-        disabled: !dataSourceService
-          ?.get('dataSources')
-          ?.filter((ds) => ds.methods?.length || dataSourceService?.getFormMethod(ds.type).length).length,
-        value: ActionType.DATA_SOURCE,
-      },
-    ],
-  };
-  return { ...defaultActionTypeConfig, ...props.config.actionTypeConfig };
-});
-
-// 联动组件配置
-const targetCompConfig = computed(() => {
-  const defaultTargetCompConfig = {
-    name: 'to',
-    text: '联动组件',
-    type: 'ui-select',
-    display: (mForm: FormState, { model }: { model: Record<any, any> }) => model.actionType === ActionType.COMP,
-  };
-  return { ...defaultTargetCompConfig, ...props.config.targetCompConfig };
-});
-
-// 联动组件动作配置
-const compActionConfig = computed(() => {
-  const defaultCompActionConfig = {
-    name: 'method',
-    text: '动作',
-    type: 'select',
-    display: (mForm: FormState, { model }: { model: Record<any, any> }) => model.actionType === ActionType.COMP,
-    options: (mForm: FormState, { model }: any) => {
-      const node = editorService?.getNodeById(model.to);
-      if (!node?.type) return [];
-
-      return eventsService?.getMethod(node.type).map((option: any) => ({
-        text: option.label,
-        value: option.value,
-      }));
-    },
-  };
-  return { ...defaultCompActionConfig, ...props.config.compActionConfig };
-});
-
-// 代码联动配置
-const codeActionConfig = computed(() => {
-  const defaultCodeActionConfig: CodeSelectColConfig = {
-    type: 'code-select-col',
-    text: '代码块',
-    name: 'codeId',
-    notEditable: () => !codeBlockService?.getEditStatus(),
-    display: (mForm, { model }) => model.actionType === ActionType.CODE,
-  };
-  return { ...defaultCodeActionConfig, ...props.config.codeActionConfig };
-});
-
-// 数据源联动配置
-const dataSourceActionConfig = computed(() => {
-  const defaultDataSourceActionConfig: DataSourceMethodSelectConfig = {
-    type: 'data-source-method-select',
-    text: '数据源方法',
-    name: 'dataSourceMethod',
-    notEditable: () => !services?.dataSourceService.get('editable'),
-    display: (mForm, { model }) => model.actionType === ActionType.DATA_SOURCE,
-  };
-  return { ...defaultDataSourceActionConfig, ...props.config.dataSourceActionConfig };
-});
-
-// 兼容旧的数据格式
-const tableConfig = computed(() => ({
-  type: 'table',
-  name: 'events',
-  items: [
-    {
-      name: 'name',
-      label: '事件名',
-      type: eventNameConfig.value.type,
-      options: (mForm: FormState, { formValue }: any) =>
-        eventsService?.getEvent(formValue.type).map((option: any) => ({
-          text: option.label,
-          value: option.value,
-        })),
-    },
-    {
-      name: 'to',
-      label: '联动组件',
-      type: 'ui-select',
-    },
-    {
-      name: 'method',
-      label: '动作',
-      type: compActionConfig.value.type,
-      options: (mForm: FormState, { model }: any) => {
-        const node = editorService?.getNodeById(model.to);
-        if (!node?.type) return [];
-
-        return eventsService?.getMethod(node.type).map((option: any) => ({
-          text: option.label,
-          value: option.value,
-        }));
-      },
-    },
-  ],
-}));
-
-// 组件动作组表单配置
-const actionsConfig = computed<PanelConfig>(() => ({
-  type: 'panel',
-  items: [
-    {
-      type: 'group-list',
-      name: 'actions',
-      expandAll: true,
-      enableToggleMode: false,
-      titlePrefix: '动作',
-      items: [
-        actionTypeConfig.value,
-        targetCompConfig.value,
-        compActionConfig.value,
-        codeActionConfig.value,
-        dataSourceActionConfig.value,
-      ],
-    },
-  ],
-}));
-
-// 是否为旧的数据格式
-const isOldVersion = computed(() => {
-  if (props.model[props.name].length === 0) return false;
-  return !has(props.model[props.name][0], 'actions');
-});
-
-// 添加事件
-const addEvent = () => {
-  const defaultEvent = {
-    name: '',
-    actions: [],
-  };
-  if (!props.model[props.name]) {
-    props.model[props.name] = [];
-  }
-  props.model[props.name].push(defaultEvent);
-  onChangeHandler();
-};
-
-// 删除事件
-const removeEvent = (index: number) => {
-  if (!props.name) return;
-  props.model[props.name].splice(index, 1);
-  onChangeHandler();
-};
-
-const onChangeHandler = () => {
-  emit('change', props.model);
-};
+const onChangeHandler = (_v: any, eventData?: ContainerChangeEventData) =>
+  emit('change', props.model[props.name], eventData);
 </script>

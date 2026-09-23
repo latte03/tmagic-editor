@@ -1,7 +1,7 @@
 /*
  * Tencent is pleased to support the open source community by making TMagicEditor available.
  *
- * Copyright (C) 2023 THL A29 Limited, a Tencent company.  All rights reserved.
+ * Copyright (C) 2025 Tencent.  All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,16 +18,21 @@
 
 import { reactive } from 'vue';
 import { cloneDeep, mergeWith } from 'lodash-es';
-import { Writable } from 'type-fest';
+import type { Writable } from 'type-fest';
 
-import { DepTargetType } from '@tmagic/dep';
+import type { Id, MComponent, MNode, TargetOptions } from '@tmagic/core';
+import { Target, Watcher } from '@tmagic/core';
 import type { FormConfig } from '@tmagic/form';
-import type { Id, MComponent, MNode } from '@tmagic/schema';
-import { getValueByKeyPath, guid, setValueByKeyPath, toLine } from '@tmagic/utils';
+import { getNodePath, getValueByKeyPath, guid, setValueByKeyPath, toLine } from '@tmagic/utils';
 
-import depService from '@editor/services/dep';
 import editorService from '@editor/services/editor';
-import type { AsyncHookPlugin, PropsState, SyncHookPlugin } from '@editor/type';
+import type {
+  AsyncHookPlugin,
+  PropsFormConfigFunction,
+  PropsFormValueFunction,
+  PropsState,
+  SyncHookPlugin,
+} from '@editor/type';
 import { fillConfig } from '@editor/utils/props';
 
 import BaseService from './BaseService';
@@ -52,6 +57,10 @@ class Props extends BaseService {
     propsConfigMap: {},
     propsValueMap: {},
     relateIdMap: {},
+    /** 禁用数据源 */
+    disabledDataSource: false,
+    /** 禁用代码块 */
+    disabledCodeBlock: false,
   });
 
   constructor() {
@@ -61,19 +70,50 @@ class Props extends BaseService {
     ]);
   }
 
-  public setPropsConfigs(configs: Record<string, FormConfig>) {
+  public setDisabledDataSource(disabled: boolean) {
+    this.state.disabledDataSource = disabled;
+  }
+
+  public setDisabledCodeBlock(disabled: boolean) {
+    this.state.disabledCodeBlock = disabled;
+  }
+
+  public getDisabledDataSource(): boolean {
+    return this.state.disabledDataSource;
+  }
+
+  public getDisabledCodeBlock(): boolean {
+    return this.state.disabledCodeBlock;
+  }
+
+  public setPropsConfigs(configs: Record<string, FormConfig | PropsFormConfigFunction>) {
     Object.keys(configs).forEach((type: string) => {
       this.setPropsConfig(toLine(type), configs[type]);
     });
     this.emit('props-configs-change');
   }
 
-  public async fillConfig(config: FormConfig, labelWidth?: string) {
-    return fillConfig(config, typeof labelWidth !== 'function' ? labelWidth : '80px');
+  public getPropsConfigs(): Record<string, FormConfig> {
+    return this.state.propsConfigMap;
   }
 
-  public async setPropsConfig(type: string, config: FormConfig) {
-    this.state.propsConfigMap[toLine(type)] = await this.fillConfig(Array.isArray(config) ? config : [config]);
+  public async fillConfig(config: FormConfig, labelWidth = '80px') {
+    return fillConfig(config, {
+      labelWidth,
+      disabledDataSource: this.getDisabledDataSource(),
+      disabledCodeBlock: this.getDisabledCodeBlock(),
+    });
+  }
+
+  public async setPropsConfig(type: string, config: FormConfig | PropsFormConfigFunction) {
+    let c: FormConfig;
+    if (typeof config === 'function') {
+      c = config({ editorService });
+    } else {
+      c = config;
+    }
+
+    this.state.propsConfigMap[toLine(type)] = await this.fillConfig(Array.isArray(c) ? c : [c]);
   }
 
   /**
@@ -81,18 +121,26 @@ class Props extends BaseService {
    * @param type 组件类型
    * @returns 组件属性表单配置
    */
-  public async getPropsConfig(type: string): Promise<FormConfig> {
+  public async getPropsConfig(type: string, data?: { node?: MNode | null }): Promise<FormConfig> {
     if (type === 'area') {
-      return await this.getPropsConfig('button');
+      return await this.getPropsConfig('button', data);
     }
 
     return cloneDeep(this.state.propsConfigMap[toLine(type)] || (await this.fillConfig([])));
   }
 
-  public setPropsValues(values: Record<string, Partial<MNode>>) {
+  public hasPropsConfig(type: string): boolean {
+    return !!this.state.propsConfigMap[toLine(type)];
+  }
+
+  public setPropsValues(values: Record<string, Partial<MNode> | PropsFormValueFunction>) {
     Object.keys(values).forEach((type: string) => {
       this.setPropsValue(toLine(type), values[type]);
     });
+  }
+
+  public getPropsValues(): Record<string, Partial<MNode>> {
+    return this.state.propsValueMap;
   }
 
   /**
@@ -100,8 +148,12 @@ class Props extends BaseService {
    * @param type 组件类型
    * @param value 组件初始值
    */
-  public async setPropsValue(type: string, value: Partial<MNode>) {
-    this.state.propsValueMap[toLine(type)] = value;
+  public async setPropsValue(type: string, value: Partial<MNode> | PropsFormValueFunction) {
+    let v = value;
+    if (typeof value === 'function') {
+      v = value({ editorService });
+    }
+    this.state.propsValueMap[toLine(type)] = v;
   }
 
   /**
@@ -136,6 +188,10 @@ class Props extends BaseService {
       ...defaultPropsValue,
       ...mergeWith({}, cloneDeep(this.state.propsValueMap[type] || {}), data),
     };
+  }
+
+  public hasPropsValue(type: string): boolean {
+    return !!this.state.propsValueMap[toLine(type)];
   }
 
   public createId(type: string | number): string {
@@ -196,16 +252,24 @@ class Props extends BaseService {
    * @param originConfigs 原组件配置
    * @param targetConfigs 待替换的组件配置
    */
-  public replaceRelateId(originConfigs: MNode[], targetConfigs: MNode[]) {
+  public replaceRelateId(originConfigs: MNode[], targetConfigs: MNode[], collectorOptions: TargetOptions) {
     const relateIdMap = this.getRelateIdMap();
+
     if (Object.keys(relateIdMap).length === 0) return;
 
-    const target = depService.getTarget(DepTargetType.RELATED_COMP_WHEN_COPY, DepTargetType.RELATED_COMP_WHEN_COPY);
-    if (!target) return;
+    const target = new Target({
+      ...collectorOptions,
+    });
+
+    const coperWatcher = new Watcher();
+
+    coperWatcher.addTarget(target);
+    coperWatcher.collect(originConfigs, {}, true, collectorOptions.type);
 
     originConfigs.forEach((config: MNode) => {
       const newId = relateIdMap[config.id];
-      const targetConfig = targetConfigs.find((targetConfig) => targetConfig.id === newId);
+      const path = getNodePath(newId, targetConfigs);
+      const targetConfig = path[path.length - 1];
 
       if (!targetConfig) return;
 
@@ -213,9 +277,13 @@ class Props extends BaseService {
         const relateOriginId = getValueByKeyPath(fullKey, config);
         const relateTargetId = relateIdMap[relateOriginId];
         if (!relateTargetId) return;
-
         setValueByKeyPath(fullKey, relateTargetId, targetConfig);
       });
+
+      // 递归items
+      if (config.items && Array.isArray(config.items)) {
+        this.replaceRelateId(config.items, targetConfigs, collectorOptions);
+      }
     });
   }
 

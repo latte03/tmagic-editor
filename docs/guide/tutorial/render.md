@@ -1,20 +1,32 @@
 # 3.[DSL](../conception.md#dsl) 解析渲染
 
-tmagic 提供了 vue3/vue2/react 三个版本的解析渲染组件，可以直接使用
+tmagic 提供了 vue/react 两个版本的解析渲染组件，可以直接使用。基础渲染组件以 container 为核心，配合 page、button、img、text 等多个独立的 npm 包，分别发布在 `vue-components/` 与 `react-components/` 下：
 
-[@tmagic/ui](https://www.npmjs.com/package/@tmagic/ui)
+vue 版本：
 
-[@tmagic/ui-vue2](https://www.npmjs.com/package/@tmagic/ui-vue2)
+- [@tmagic/vue-container](https://www.npmjs.com/package/@tmagic/vue-container)
+- [@tmagic/vue-page](https://www.npmjs.com/package/@tmagic/vue-page)
+- [@tmagic/vue-button](https://www.npmjs.com/package/@tmagic/vue-button)
+- [@tmagic/vue-img](https://www.npmjs.com/package/@tmagic/vue-img)
+- [@tmagic/vue-text](https://www.npmjs.com/package/@tmagic/vue-text)
+- 其他：`@tmagic/vue-overlay`、`@tmagic/vue-qrcode`、`@tmagic/vue-page-fragment`、`@tmagic/vue-page-fragment-container`、`@tmagic/vue-iterator-container`
 
-[@tmagic/ui-react](https://www.npmjs.com/package/@tmagic/ui-react)
+react 版本：
 
-接下来是以vue3为基础，来讲述如何实现一个[@tmagic/ui](https://www.npmjs.com/package/@tmagic/ui)
+- [@tmagic/react-container](https://www.npmjs.com/package/@tmagic/react-container)
+- [@tmagic/react-page](https://www.npmjs.com/package/@tmagic/react-page)
+- [@tmagic/react-button](https://www.npmjs.com/package/@tmagic/react-button)
+- [@tmagic/react-img](https://www.npmjs.com/package/@tmagic/react-img)
+- [@tmagic/react-text](https://www.npmjs.com/package/@tmagic/react-text)
+- 其他：`@tmagic/react-overlay`、`@tmagic/react-qrcode`、`@tmagic/react-page-fragment`、`@tmagic/react-page-fragment-container`、`@tmagic/react-iterator-container`
+
+接下来是以 vue 为基础，来讲述如何实现一个类似 [@tmagic/vue-container](https://www.npmjs.com/package/@tmagic/vue-container) 的渲染器
 
 ## 准备工作
 
 ### 创建项目
 
-将[上一教程](./runtime.md)中的[editor-runtime](https://github.com/jia000/tmagic-tutorial/tree/master/course2/editor-runtime)和[hello-editor](https://github.com/jia000/tmagic-tutorial/tree/master/course2/hellow-editor)复制过来
+将[上一教程](./runtime.md)中的[editor-runtime](https://github.com/jia000/tmagic-tutorial/tree/master/course2/editor-runtime)和[hello-editor](https://github.com/jia000/tmagic-tutorial/tree/master/course2/hello-editor)复制过来
 
 ## 基础概念
 
@@ -71,7 +83,7 @@ app.component('hello-world', HelloWorld);
 
 ```vue
 <template>
-  <component v-if="config" :is="type" :id="`${id}`" :style="style" :config="config"></component>
+  <component v-if="config" :is="type" :data-tmagic-id="`${id}`" :style="style" :config="config"></component>
 </template>
 
 <script lang=ts setup>
@@ -93,7 +105,7 @@ const id = computed(() => props.config.id);
 </script>
 ```
 
-接下来就需要解析节点的样式，在tmagic/editor中默认会将样式配置保存到节点的style属性中，如果自行定义到了其他属性，则已实际为准
+接下来就需要解析节点的样式，在@tmagic/editor中默认会将样式配置保存到节点的style属性中，如果自行定义到了其他属性，则以实际为准
 
 解析style需要注意几个地方
 
@@ -101,13 +113,13 @@ const id = computed(() => props.config.id);
 
 css中的数值有些是需要单位的，例如px，有些是不需要的，例如opacity
 
-在tmagic/editor中，默认都是不带单位的，所以需要将需要单位的地方补齐单位
+在@tmagic/editor中，默认都是不带单位的，所以需要将需要单位的地方补齐单位
 
 这里做补齐px处理，如果需要做屏幕大小适应， 可以使用rem或者vw，这个可以根据自身需求处理。
 
 2. url
 
-css中的[url](https://developer.mozilla.org/zh-CN/docs/Web/CSS/url)需要是用url()，所以当值为url时，需要转为url(xxx)
+css中的[url](https://developer.mozilla.org/zh-CN/docs/Web/CSS/url)需要使用 url()，所以当值为url时，需要转为url(xxx)
 
 3. transform
 

@@ -1,7 +1,8 @@
+/* eslint-disable @typescript-eslint/naming-convention */
 /*
  * Tencent is pleased to support the open source community by making TMagicEditor available.
  *
- * Copyright (C) 2023 THL A29 Limited, a Tencent company.  All rights reserved.
+ * Copyright (C) 2025 Tencent.  All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,22 +16,27 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+import {
+  HookType,
+  NODE_CONDS_KEY,
+  NODE_CONDS_RESULT_KEY,
+  NODE_DISABLE_CODE_BLOCK_KEY,
+  NODE_DISABLE_DATA_SOURCE_KEY,
+} from '@tmagic/core';
+import { tMagicMessage } from '@tmagic/design';
+import type { ChildConfig, DisplayCondsConfig, FormConfig, TabConfig, TabPaneConfig } from '@tmagic/form';
 
-import type { FormConfig, FormState, TabPaneConfig } from '@tmagic/form';
-
-import dataSourceService from '@editor/services/dataSource';
-
-const arrayOptions = [
+export const arrayOptions = [
   { text: '包含', value: 'include' },
   { text: '不包含', value: 'not_include' },
 ];
 
-const eqOptions = [
+export const eqOptions = [
   { text: '等于', value: '=' },
   { text: '不等于', value: '!=' },
 ];
 
-const numberOptions = [
+export const numberOptions = [
   { text: '大于', value: '>' },
   { text: '大于等于', value: '>=' },
   { text: '小于', value: '<' },
@@ -39,286 +45,98 @@ const numberOptions = [
   { text: '不在范围内', value: 'not_between' },
 ];
 
+export const booleanOptions = [
+  { text: '是', value: 'is' },
+  { text: '不是', value: 'not' },
+];
+
+/** 按字段类型返回条件运算符选项（UI 与 typeMatch 校验共用） */
+export const getCondOpOptionsByFieldType = (type: string) => {
+  if (type === 'array') {
+    return arrayOptions;
+  }
+
+  if (type === 'boolean' || type === 'null') {
+    return booleanOptions;
+  }
+
+  if (type === 'number') {
+    return [...eqOptions, ...numberOptions];
+  }
+
+  if (type === 'string') {
+    return [...arrayOptions, ...eqOptions];
+  }
+
+  return [...arrayOptions, ...eqOptions, ...numberOptions];
+};
+
 export const styleTabConfig: TabPaneConfig = {
   title: '样式',
+  display: ({ services }: any) => !(services?.uiService?.get('showStylePanel') ?? true),
   items: [
     {
       name: 'style',
+      labelWidth: '100px',
+      type: 'style-setter',
       items: [
         {
-          type: 'fieldset',
-          legend: '位置',
-          items: [
-            {
-              type: 'data-source-field-select',
-              name: 'position',
-              text: '固定定位',
-              checkStrictly: false,
-              dataSourceFieldType: ['string'],
-              fieldConfig: {
-                type: 'checkbox',
-                activeValue: 'fixed',
-                inactiveValue: 'absolute',
-                defaultValue: 'absolute',
-              },
-            },
-            {
-              type: 'data-source-field-select',
-              name: 'left',
-              text: 'left',
-              checkStrictly: false,
-              dataSourceFieldType: ['string', 'number'],
-              fieldConfig: {
-                type: 'text',
-              },
-            },
-            {
-              type: 'data-source-field-select',
-              name: 'top',
-              text: 'top',
-              checkStrictly: false,
-              dataSourceFieldType: ['string', 'number'],
-              fieldConfig: {
-                type: 'text',
-              },
-              disabled: (vm: FormState, { model }: any) =>
-                model.position === 'fixed' && model._magic_position === 'fixedBottom',
-            },
-            {
-              type: 'data-source-field-select',
-              name: 'right',
-              text: 'right',
-              checkStrictly: false,
-              dataSourceFieldType: ['string', 'number'],
-              fieldConfig: {
-                type: 'text',
-              },
-            },
-            {
-              type: 'data-source-field-select',
-              name: 'bottom',
-              text: 'bottom',
-              checkStrictly: false,
-              dataSourceFieldType: ['string', 'number'],
-              fieldConfig: {
-                type: 'text',
-              },
-              disabled: (vm: FormState, { model }: any) =>
-                model.position === 'fixed' && model._magic_position === 'fixedTop',
-            },
+          names: [
+            'display',
+            'flexDirection',
+            'justifyContent',
+            'alignItems',
+            'flexWrap',
+            'marginTop',
+            'marginRight',
+            'marginBottom',
+            'marginLeft',
+            'paddingTop',
+            'paddingRight',
+            'paddingBottom',
+            'paddingLeft',
+            'width',
+            'height',
+            'overflow',
+            'fontSize',
+            'lineHeight',
+            'fontWeight',
+            'color',
+            'textAlign',
+            'backgroundColor',
+            'backgroundImage',
+            'backgroundSize',
+            'backgroundPosition',
+            'backgroundRepeat',
+            'position',
+            'zIndex',
+            'top',
+            'right',
+            'bottom',
+            'left',
+            'borderRadius',
+            'borderTopWidth',
+            'borderTopStyle',
+            'borderTopColor',
+            'borderRightColor',
+            'borderRightWidth',
+            'borderRightStyle',
+            'borderRightColor',
+            'borderBottomWidth',
+            'borderBottomStyle',
+            'borderBottomColor',
+            'borderLeftStyle',
+            'borderLeftWidth',
+            'borderLeftColor',
+            'borderWidth',
+            'borderStyle',
+            'borderColor',
+            'opacity',
           ],
-        },
+        } as unknown as ChildConfig,
         {
-          type: 'fieldset',
-          legend: '盒子',
-          items: [
-            {
-              type: 'data-source-field-select',
-              name: 'width',
-              text: '宽度',
-              checkStrictly: false,
-              dataSourceFieldType: ['string', 'number'],
-              fieldConfig: {
-                type: 'text',
-              },
-            },
-            {
-              type: 'data-source-field-select',
-              name: 'height',
-              text: '高度',
-              checkStrictly: false,
-              dataSourceFieldType: ['string', 'number'],
-              fieldConfig: {
-                type: 'text',
-              },
-            },
-            {
-              type: 'data-source-field-select',
-              text: 'overflow',
-              name: 'overflow',
-              checkStrictly: false,
-              dataSourceFieldType: ['string'],
-              fieldConfig: {
-                type: 'select',
-                options: [
-                  { text: 'visible', value: 'visible' },
-                  { text: 'hidden', value: 'hidden' },
-                  { text: 'clip', value: 'clip' },
-                  { text: 'scroll', value: 'scroll' },
-                  { text: 'auto', value: 'auto' },
-                  { text: 'overlay', value: 'overlay' },
-                ],
-              },
-            },
-          ],
-        },
-        {
-          type: 'fieldset',
-          legend: '边框',
-          items: [
-            {
-              type: 'data-source-field-select',
-              name: 'borderWidth',
-              text: '宽度',
-              defaultValue: '0',
-              checkStrictly: false,
-              dataSourceFieldType: ['string', 'number'],
-              fieldConfig: {
-                type: 'text',
-              },
-            },
-            {
-              type: 'data-source-field-select',
-              name: 'borderColor',
-              text: '颜色',
-              checkStrictly: false,
-              dataSourceFieldType: ['string'],
-              fieldConfig: {
-                type: 'text',
-              },
-            },
-            {
-              type: 'data-source-field-select',
-              name: 'borderStyle',
-              text: '样式',
-              defaultValue: 'none',
-              checkStrictly: false,
-              dataSourceFieldType: ['string'],
-              fieldConfig: {
-                type: 'select',
-                options: [
-                  { text: 'none', value: 'none' },
-                  { text: 'hidden', value: 'hidden' },
-                  { text: 'dotted', value: 'dotted' },
-                  { text: 'dashed', value: 'dashed' },
-                  { text: 'solid', value: 'solid' },
-                  { text: 'double', value: 'double' },
-                  { text: 'groove', value: 'groove' },
-                  { text: 'ridge', value: 'ridge' },
-                  { text: 'inset', value: 'inset' },
-                  { text: 'outset', value: 'outset' },
-                ],
-              },
-            },
-          ],
-        },
-        {
-          type: 'fieldset',
-          legend: '背景',
-          items: [
-            {
-              type: 'data-source-field-select',
-              name: 'backgroundImage',
-              text: '背景图',
-              checkStrictly: false,
-              dataSourceFieldType: ['string'],
-              fieldConfig: {
-                type: 'text',
-              },
-            },
-            {
-              type: 'data-source-field-select',
-              name: 'backgroundColor',
-              text: '背景颜色',
-              checkStrictly: false,
-              dataSourceFieldType: ['string'],
-              fieldConfig: {
-                type: 'colorPicker',
-              },
-            },
-            {
-              type: 'data-source-field-select',
-              name: 'backgroundRepeat',
-              text: '背景图重复',
-              defaultValue: 'no-repeat',
-              checkStrictly: false,
-              dataSourceFieldType: ['string'],
-              fieldConfig: {
-                type: 'select',
-                options: [
-                  { text: 'repeat', value: 'repeat' },
-                  { text: 'repeat-x', value: 'repeat-x' },
-                  { text: 'repeat-y', value: 'repeat-y' },
-                  { text: 'no-repeat', value: 'no-repeat' },
-                  { text: 'inherit', value: 'inherit' },
-                ],
-              },
-            },
-            {
-              type: 'data-source-field-select',
-              name: 'backgroundSize',
-              text: '背景图大小',
-              defaultValue: '100% 100%',
-              checkStrictly: false,
-              dataSourceFieldType: ['string'],
-              fieldConfig: {
-                type: 'text',
-              },
-            },
-          ],
-        },
-        {
-          type: 'fieldset',
-          legend: '字体',
-          items: [
-            {
-              type: 'data-source-field-select',
-              name: 'color',
-              text: '颜色',
-              checkStrictly: false,
-              dataSourceFieldType: ['string'],
-              fieldConfig: {
-                type: 'colorPicker',
-              },
-            },
-            {
-              type: 'data-source-field-select',
-              name: 'fontSize',
-              text: '大小',
-              checkStrictly: false,
-              dataSourceFieldType: ['string', 'number'],
-              fieldConfig: {
-                type: 'text',
-              },
-            },
-            {
-              type: 'data-source-field-select',
-              name: 'fontWeight',
-              text: '粗细',
-              checkStrictly: false,
-              dataSourceFieldType: ['string', 'number'],
-              fieldConfig: {
-                type: 'text',
-              },
-            },
-          ],
-        },
-        {
-          type: 'fieldset',
-          legend: '变形',
           name: 'transform',
-          items: [
-            {
-              type: 'data-source-field-select',
-              name: 'rotate',
-              text: '旋转角度',
-              checkStrictly: false,
-              dataSourceFieldType: ['string'],
-              fieldConfig: {
-                type: 'text',
-              },
-            },
-            {
-              type: 'data-source-field-select',
-              name: 'scale',
-              text: '缩放',
-              checkStrictly: false,
-              dataSourceFieldType: ['number', 'string'],
-              fieldConfig: {
-                type: 'text',
-              },
-            },
-          ],
+          defaultValue: () => ({}),
         },
       ],
     },
@@ -333,132 +151,113 @@ export const eventTabConfig: TabPaneConfig = {
       src: 'component',
       labelWidth: '100px',
       type: 'event-select',
+      defaultValue: [],
+      rules: [{ typeMatch: true }],
     },
   ],
 };
 
 export const advancedTabConfig: TabPaneConfig = {
   title: '高级',
-  lazy: true,
   items: [
     {
+      name: NODE_DISABLE_CODE_BLOCK_KEY,
+      text: '禁用代码块',
+      type: 'switch',
+      defaultValue: false,
+      extra: '开启后，配置的代码块将不会被执行',
+    },
+    {
+      name: NODE_DISABLE_DATA_SOURCE_KEY,
+      text: '禁用数据源',
+      type: 'switch',
+      defaultValue: false,
+      extra: '开启后，组件内配置的数据源相关配置将不会被编译，显隐条件将失效',
+    },
+    {
       name: 'created',
-      text: 'created',
+      text: 'Created',
+      labelPosition: 'top',
       type: 'code-select',
+      titleExtra: '组件初始化时执行',
+      rules: [
+        { typeMatch: true, trigger: 'change' },
+        {
+          validator: ({ value, callback }: any) => {
+            if (value && value.hookType !== HookType.CODE) {
+              return callback('hookType 必须是 code');
+            }
+            callback();
+          },
+        },
+      ],
     },
     {
       name: 'mounted',
-      text: 'mounted',
+      text: 'Mounted',
+      labelPosition: 'top',
       type: 'code-select',
+      titleExtra: '组件挂载到dom时执行',
+      rules: [
+        { typeMatch: true, trigger: 'change' },
+        {
+          validator: ({ value, callback }: any) => {
+            if (value && value.hookType !== HookType.CODE) {
+              return callback('hookType 必须是 code');
+            }
+            callback();
+          },
+        },
+      ],
+    },
+    {
+      name: 'display',
+      text: 'Display',
+      titleExtra: '控制组件是否渲染，关系的代码块返回值为false时不渲染',
+      labelPosition: 'top',
+      type: 'code-select',
+      rules: [
+        { typeMatch: true, trigger: 'change' },
+        {
+          validator: ({ value, callback }: any) => {
+            if (value && value.hookType !== HookType.CODE) {
+              return callback('hookType 必须是 code');
+            }
+            callback();
+          },
+        },
+      ],
     },
   ],
 };
 
-export const displayTabConfig: TabPaneConfig = {
+export const displayTabConfig: TabPaneConfig<DisplayCondsConfig> = {
   title: '显示条件',
-  display: (vm: FormState, { model }: any) => model.type !== 'page',
+  display: (_state, { model }) => model.type !== 'page',
   items: [
     {
-      type: 'groupList',
-      name: 'displayConds',
-      titlePrefix: '条件组',
-      expandAll: true,
-      items: [
-        {
-          type: 'table',
-          name: 'cond',
-          items: [
-            {
-              type: 'data-source-field-select',
-              name: 'field',
-              value: 'key',
-              label: '字段',
-              checkStrictly: false,
-              dataSourceFieldType: ['string', 'number', 'boolean', 'any'],
-            },
-            {
-              type: 'select',
-              options: (mForm, { model }) => {
-                const [id, ...fieldNames] = model.field;
-
-                const ds = dataSourceService.getDataSourceById(id);
-
-                let fields = ds?.fields || [];
-                let type = '';
-                (fieldNames || []).forEach((fieldName: string) => {
-                  const field = fields.find((f) => f.name === fieldName);
-                  fields = field?.fields || [];
-                  type = field?.type || '';
-                });
-
-                if (type === 'array') {
-                  return arrayOptions;
-                }
-
-                if (type === 'boolean') {
-                  return [
-                    { text: '是', value: 'is' },
-                    { text: '不是', value: 'not' },
-                  ];
-                }
-
-                if (type === 'number') {
-                  return [...eqOptions, ...numberOptions];
-                }
-
-                if (type === 'string') {
-                  return [...arrayOptions, ...eqOptions];
-                }
-
-                return [...arrayOptions, ...eqOptions, ...numberOptions];
-              },
-              label: '条件',
-              name: 'op',
-            },
-            {
-              label: '值',
-              items: [
-                {
-                  name: 'value',
-                  type: (mForm, { model }) => {
-                    const [id, ...fieldNames] = model.field;
-
-                    const ds = dataSourceService.getDataSourceById(id);
-
-                    let fields = ds?.fields || [];
-                    let type = '';
-                    (fieldNames || []).forEach((fieldName: string) => {
-                      const field = fields.find((f) => f.name === fieldName);
-                      fields = field?.fields || [];
-                      type = field?.type || '';
-                    });
-
-                    if (type === 'number') {
-                      return 'number';
-                    }
-
-                    if (type === 'boolean') {
-                      return 'select';
-                    }
-
-                    return 'text';
-                  },
-                  options: [
-                    { text: 'true', value: true },
-                    { text: 'false', value: false },
-                  ],
-                  display: (vm, { model }) => !['between', 'not_between'].includes(model.op),
-                },
-                {
-                  name: 'range',
-                  type: 'number-range',
-                  display: (vm, { model }) => ['between', 'not_between'].includes(model.op),
-                },
-              ],
-            },
-          ],
-        },
+      name: NODE_CONDS_RESULT_KEY,
+      type: 'select',
+      text: '条件成立时',
+      defaultValue: false,
+      options: [
+        { text: '显示', value: false },
+        { text: '隐藏', value: true },
       ],
+      extra: (_state, { model }) =>
+        `条件成立时${model[NODE_CONDS_RESULT_KEY] ? '隐藏' : '显示'}，不成立时${model[NODE_CONDS_RESULT_KEY] ? '显示' : '隐藏'}；<br />同一条件组内的所有条件配置同时成立时表示该条件组成立，任意一个条件组成立时表示条件成立(条件组内为且的关系，条件组间为或的关系)；<br />条件为空时表示成立；`,
+    },
+    {
+      text: '条件组配置',
+      static: true,
+      className: 'display-conds-title',
+    },
+    {
+      type: 'display-conds',
+      name: NODE_CONDS_KEY,
+      titlePrefix: '条件组',
+      defaultValue: [],
+      rules: [{ typeMatch: true }],
     },
   ],
 };
@@ -468,37 +267,90 @@ export const displayTabConfig: TabPaneConfig = {
  * @param config 组件属性配置
  * @returns Object
  */
-export const fillConfig = (config: FormConfig = [], labelWidth = '80px'): FormConfig => [
+export const fillConfig = (
+  config: FormConfig = [],
   {
+    labelWidth = '80px',
+    disabledDataSource = false,
+    disabledCodeBlock = false,
+  }: { labelWidth?: string; disabledDataSource?: boolean; disabledCodeBlock?: boolean } = {},
+): FormConfig => {
+  const propsConfig: FormConfig = [];
+
+  // 组件类型，必须要有
+  if (!config.find((item) => 'name' in item && item.name === 'type')) {
+    propsConfig.push({
+      text: 'type',
+      name: 'type',
+      type: 'hidden',
+    });
+  }
+
+  if (!config.find((item) => 'name' in item && item.name === 'id')) {
+    // 组件id，必须要有
+    propsConfig.push({
+      name: 'id',
+      text: 'ID',
+      type: 'text',
+      // 走纯文本渲染，避免出现 disabled 的灰底输入框；append 仍正常显示。
+      static: true,
+
+      append: {
+        type: 'icon',
+        text: 'https://vip.image.video.qpic.cn/vupload/20260615/36cf7e1781493669935.svg',
+        extra: '复制',
+        handler: (vm, { model }) => {
+          navigator.clipboard
+            .writeText(`${model.id}`)
+            .then(() => {
+              tMagicMessage.success('已复制');
+            })
+            .catch(() => {
+              tMagicMessage.error('复制失败');
+            });
+        },
+      },
+    });
+  }
+
+  if (!config.find((item) => 'name' in item && item.name === 'name')) {
+    propsConfig.push({
+      name: 'name',
+      text: '组件名称',
+    });
+  }
+
+  const noCodeAdvancedTabItems = advancedTabConfig.items.filter(
+    (item) => 'type' in item && item.type !== 'code-select',
+  );
+
+  if (noCodeAdvancedTabItems.length > 0 && disabledCodeBlock) {
+    advancedTabConfig.items = noCodeAdvancedTabItems;
+  }
+
+  const tabConfig: TabConfig = {
     type: 'tab',
     labelWidth,
+    className: 'magic-right-panel-tabs-top',
     items: [
       {
         title: '属性',
-        items: [
-          // 组件类型，必须要有
-          {
-            text: 'type',
-            name: 'type',
-            type: 'hidden',
-          },
-          // 组件id，必须要有
-          {
-            name: 'id',
-            type: 'display',
-            text: 'id',
-          },
-          {
-            name: 'name',
-            text: '组件名称',
-          },
-          ...config,
-        ],
+        items: [...propsConfig, ...config],
       },
       { ...styleTabConfig },
       { ...eventTabConfig },
-      { ...advancedTabConfig },
-      { ...displayTabConfig },
     ],
-  },
-];
+  };
+
+  if (!disabledCodeBlock) {
+    tabConfig.items.push({ ...advancedTabConfig });
+  } else if (noCodeAdvancedTabItems.length > 0) {
+    tabConfig.items.push({ ...advancedTabConfig });
+  }
+
+  if (!disabledDataSource) {
+    tabConfig.items.push({ ...displayTabConfig });
+  }
+
+  return [tabConfig];
+};

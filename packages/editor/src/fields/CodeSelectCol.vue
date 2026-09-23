@@ -2,17 +2,32 @@
   <div class="m-fields-code-select-col">
     <div class="code-select-container">
       <!-- 代码块下拉框 -->
-      <MContainer
+      <!-- 对比模式下交由 MFormContainer 展示下拉框的前后差异（codeId 变化时高亮新旧代码块名），
+           普通模式仍直接渲染 MSelect 以保留选择 / 写值逻辑 -->
+      <MFormContainer
+        v-if="isCompareMode"
         class="select"
         :config="selectConfig"
         :model="model"
+        :last-values="lastValues"
+        :is-compare="true"
         :size="size"
-        @change="onParamsChangeHandler"
-      ></MContainer>
+        :prop="prop"
+      ></MFormContainer>
+      <MSelect
+        v-else
+        class="select"
+        :config="selectConfig"
+        :name="name"
+        :model="model"
+        :size="size"
+        :prop="prop"
+        @change="onCodeIdChangeHandler"
+      ></MSelect>
 
-      <!-- 查看/编辑按钮 -->
+      <!-- 查看/编辑按钮：对比模式为只读，不展示 -->
       <TMagicButton
-        v-if="model[name] && hasCodeBlockSidePanel"
+        v-if="!isCompareMode && model[name] && hasCodeBlockSidePanel"
         class="m-fields-select-action-button"
         :size="size"
         @click="editCode(model[name])"
@@ -27,7 +42,10 @@
       name="params"
       :key="model[name]"
       :model="model"
+      :last-values="lastValues"
+      :is-compare="isCompareMode"
       :size="size"
+      :disabled="disabled"
       :params-config="paramsConfig"
       @change="onParamsChangeHandler"
     ></CodeParams>
@@ -39,13 +57,25 @@ import { computed, inject, ref, watch } from 'vue';
 import { Edit, View } from '@element-plus/icons-vue';
 import { isEmpty, map } from 'lodash-es';
 
+import type { Id } from '@tmagic/core';
 import { TMagicButton } from '@tmagic/design';
-import { createValues, type FieldProps, filterFunction, type FormState, MContainer } from '@tmagic/form';
-import type { Id } from '@tmagic/schema';
+import {
+  type CodeSelectColConfig,
+  type ContainerChangeEventData,
+  createValues,
+  type FieldProps,
+  filterFunction,
+  type FormItemConfig,
+  type FormState,
+  MContainer as MFormContainer,
+  MSelect,
+  type SelectConfig,
+} from '@tmagic/form';
 
 import CodeParams from '@editor/components/CodeParams.vue';
 import MIcon from '@editor/components/Icon.vue';
-import type { CodeParamStatement, CodeSelectColConfig, EventBus, Services } from '@editor/type';
+import { useServices } from '@editor/hooks/use-services';
+import type { CodeParamStatement, EventBus } from '@editor/type';
 import { SideItemKey } from '@editor/type';
 
 defineOptions({
@@ -53,19 +83,35 @@ defineOptions({
 });
 
 const mForm = inject<FormState | undefined>('mForm');
-const services = inject<Services>('services');
-const eventBus = inject<EventBus>('eventBus');
-const emit = defineEmits(['change']);
+const { codeBlockService, uiService } = useServices();
+const eventBus = inject<EventBus | null>('eventBus', null);
+const emit = defineEmits<{
+  change: [v: any, eventData: ContainerChangeEventData];
+}>();
 
 const props = withDefaults(defineProps<FieldProps<CodeSelectColConfig>>(), {
   disabled: false,
 });
 
+/**
+ * 对比模式判定：
+ *
+ * code-select-col 由「代码块下拉框 + 参数子表单」组成，属于复合字段。父级 `MFormContainer` 已将其
+ * 归入「自接管对比字段」（见 Container.vue 的 `SELF_DIFF_FIELD_TYPES`），即对比时只渲染一次本组件，
+ * 并把当前值 `model` 与历史值 `lastValues` 一并传入，由本组件把 `is-compare`/`lastValues` 透传给
+ * 内部的下拉框（MFormContainer）与参数表单（CodeParams），逐项展示前后差异。
+ *
+ * 仅当存在历史值时才启用对比，避免 lastValues 缺失时退化为「全部新增」的空对比。
+ */
+const isCompareMode = computed(() => Boolean(props.isCompare && props.lastValues));
+
 const notEditable = computed(() => filterFunction(mForm, props.config.notEditable, props));
 
-const hasCodeBlockSidePanel = computed(() =>
-  (services?.uiService.get('sideBarItems') || []).find((item) => item.$key === SideItemKey.CODE_BLOCK),
+const codeBlockSidePanel = computed(() =>
+  (uiService.get('sideBarItems') || []).find((item) => item.$key === SideItemKey.CODE_BLOCK),
 );
+
+const hasCodeBlockSidePanel = computed(() => codeBlockSidePanel.value);
 
 /**
  * 根据代码块id获取代码块参数配置
@@ -85,7 +131,7 @@ const getParamItemsConfig = (codeId?: Id): CodeParamStatement[] => {
   }));
 };
 
-const codeDsl = computed(() => services?.codeBlockService.getCodeDsl());
+const codeDsl = computed(() => codeBlockService.getCodeDsl());
 const paramsConfig = ref<CodeParamStatement[]>(getParamItemsConfig(props.model[props.name]));
 
 watch(
@@ -97,10 +143,11 @@ watch(
   },
 );
 
-const selectConfig = {
+const selectConfig: SelectConfig = {
   type: 'select',
   name: props.name,
-  disable: props.disabled,
+  disabled: props.disabled,
+  text: props.config.text,
   options: () => {
     if (codeDsl.value) {
       return map(codeDsl.value, (value, key) => ({
@@ -111,29 +158,46 @@ const selectConfig = {
     }
     return [];
   },
-  onChange: (formState: any, codeId: Id, { model }: any) => {
-    // 通过下拉框选择的codeId变化后修正model的值，避免写入其他codeId的params
-    paramsConfig.value = getParamItemsConfig(codeId);
+};
 
-    if (paramsConfig.value.length) {
-      model.params = createValues(formState, paramsConfig.value, {}, model.params);
-    } else {
-      model.params = {};
-    }
+const onCodeIdChangeHandler = (value: any) => {
+  // 通过下拉框选择的codeId变化后修正model的值，避免写入其他codeId的params
+  paramsConfig.value = getParamItemsConfig(value);
 
-    return codeId;
-  },
+  const changeRecords = [
+    {
+      propPath: props.prop,
+      value,
+    },
+  ];
+
+  changeRecords.push({
+    propPath: props.prop.replace(`${props.name}`, 'params'),
+    value: paramsConfig.value.length
+      ? createValues(mForm, paramsConfig.value as unknown as FormItemConfig[], {}, props.model.params)
+      : {},
+  });
+
+  emit('change', value, {
+    changeRecords,
+  });
 };
 
 /**
  * 参数值修改更新
  */
-const onParamsChangeHandler = (value: any) => {
-  props.model.params = value.params;
-  emit('change', props.model);
+const onParamsChangeHandler = (value: any, eventData: ContainerChangeEventData) => {
+  eventData.changeRecords?.forEach((record) => {
+    record.propPath = `${props.prop.replace(`${props.name}`, '')}${record.propPath}`;
+  });
+  emit('change', props.model[props.name], eventData);
 };
 
 const editCode = (id: string) => {
+  const sideBarItem = codeBlockSidePanel.value;
+  if (sideBarItem) {
+    uiService.set('sideBarActiveTabName', sideBarItem.text || sideBarItem.$key || SideItemKey.CODE_BLOCK);
+  }
   eventBus?.emit('edit-code', id);
 };
 </script>

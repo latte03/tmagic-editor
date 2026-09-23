@@ -8,7 +8,7 @@
 
 ### 一、顶部菜单栏定制
 
-通常使用 `m-editor` 组件的 [menu](/api/editor/props.html#menu) `prop` 来对齐进行设置；
+通常使用 `m-editor` 组件的 [menu](/api/editor/props.html#menu) `prop` 来对其进行设置；
 
 顶部菜单栏分为`左` `中` `右`三个部分组成，所以 [menu](/api/editor/props.html#menu) `prop`的数据格式如下：
 
@@ -16,7 +16,7 @@
 { left: [], center: [], right: [] }
 ```
 
-数组的内容可以有三种种形式：`内部定义好的字符串`、`其他字符串`、`MenuButton 或者 MenuComponent 对象`
+数组的内容可以有三种形式：`内部定义好的字符串`、`其他字符串`、`MenuButton 或者 MenuComponent 对象`
 
 #### 1. 内部定义好的字符串:
 ```ts
@@ -38,7 +38,7 @@ MenuButton 的[定义](https://github.com/Tencent/tmagic-editor/blob/239b5d3efea
 
 ```js
 {
-  type: 'buuton',
+  type: 'button',
   text: '返回',
   handler: () => window.history.back(),
 }
@@ -62,6 +62,59 @@ MenuButton 的[定义](https://github.com/Tencent/tmagic-editor/blob/239b5d3efea
 
 ### 二、左侧菜单栏
 
+左侧菜单栏主要展示组件列表、组件树、代码块、数据源等内容。可以通过 `m-editor` 组件的 [sidebar](/api/editor/props.html#sidebar) `prop` 来进行配置。
+
+#### 1. 自定义左侧面板
+
+可以使用 `sidebar` slot 来完全自定义左侧面板：
+
+```html
+<m-editor>
+  <template #sidebar>
+    <your-sidebar></your-sidebar>
+  </template>
+</m-editor>
+```
+
+#### 2. 扩展组件列表
+
+通过 [componentGroupList](/api/editor/props.html#componentgrouplist) prop 配置组件分组和列表：
+
+```js
+const componentGroupList = [
+  {
+    title: '基础组件',
+    items: [
+      {
+        text: '文本',
+        type: 'text',
+        icon: 'text-icon'
+      },
+      {
+        text: '按钮',
+        type: 'button',
+        icon: 'button-icon'
+      }
+    ]
+  },
+  {
+    title: '业务组件',
+    items: [
+      // 自定义业务组件
+    ]
+  }
+]
+```
+
+#### 3. 组件树扩展
+
+组件树会自动根据页面配置生成，可以通过 `editorService` 监听组件树相关事件：
+
+```js
+editorService.on('select', (node) => {
+  console.log('选中组件:', node);
+});
+```
 
 ### 三、右侧属性配置栏
 
@@ -69,7 +122,7 @@ MenuButton 的[定义](https://github.com/Tencent/tmagic-editor/blob/239b5d3efea
 
 默认的属性读取流程如下：
 
-组件中定义`formConfig` -> 通过`tamgic-cli`构建成 `runtime` 中 `/config/index.umd.cjs` -> `m-editor`中加载然后配置到[propsConfig](/api/editor/props.html#propsconfigs) prop中 -> `m-editor`保存到`propsService`中 -> 选中组件时`editorService`会去`propsService`调用`getPropsConfig`中读取
+组件中定义`formConfig` -> 通过`tmagic-cli`构建成 `runtime` 中 `/config/index.umd.cjs` -> `m-editor`中加载然后配置到[propsConfig](/api/editor/props.html#propsconfigs) prop中 -> `m-editor`保存到`propsService`中 -> 选中组件时`editorService`会去`propsService`调用`getPropsConfig`中读取
 
 `propsService.getPropsConfig`会调取`propsService.fillConfig`添加样式、事件、高级3个tab分页
 
@@ -118,6 +171,50 @@ propsService.usePlugin({
 </m-editor>
 ```
 
-### 四、中间工作区域
-
 ## 行为扩展
+
+### 二、服务扩展
+
+可以通过监听事件和使用插件来扩展 EditorService：
+
+```js
+// 监听编辑器事件
+editorService.on('add', (node) => {
+  console.log('添加组件:', node);
+});
+
+// 使用插件扩展
+editorService.usePlugin({
+  beforeAdd(node) {
+    // 在添加组件前执行
+    return node;
+  },
+  afterAdd(node) {
+    // 在添加组件后执行
+    return node;
+  }
+});
+```
+
+#### 2. PropsService 扩展
+
+自定义属性配置的处理逻辑：
+
+```js
+propsService.usePlugin({
+  // 修改属性配置
+  beforeGetPropsConfig(type) {
+    console.log('获取配置前:', type);
+  },
+  
+  afterGetPropsConfig(config, type) {
+    // 添加自定义配置
+    return config;
+  },
+  
+  // 自定义配置填充逻辑
+  afterFillConfig(config, type) {
+    return config;
+  }
+});
+```

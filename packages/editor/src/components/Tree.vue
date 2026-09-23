@@ -1,7 +1,15 @@
 <template>
   <div class="m-editor-tree" @dragover="handleDragOver">
     <template v-if="data?.length">
-      <TreeNode v-for="item in data" :key="item.id" :data="item" :indent="indent" :node-status-map="nodeStatusMap">
+      <TreeNode
+        v-for="item in data"
+        :key="item.id"
+        :data="item"
+        :indent="indent"
+        :next-level-indent-increment="nextLevelIndentIncrement"
+        :node-status-map="nodeStatusMap"
+        :is-expandable="isExpandable"
+      >
         <template #tree-node-content="{ data: nodeData }">
           <slot name="tree-node-content" :data="nodeData"> </slot>
         </template>
@@ -24,16 +32,16 @@
 <script setup lang="ts">
 import { provide } from 'vue';
 
-import type { Id } from '@tmagic/schema';
+import type { Id } from '@tmagic/core';
 
-import type { LayerNodeStatus, TreeNodeData } from '@editor/type';
+import type { IsExpandableFunction, LayerNodeStatus, TreeNodeData } from '@editor/type';
 
 import TreeNode from './TreeNode.vue';
 
 defineSlots<{
-  'tree-node-content'(props: { data: TreeNodeData }): any;
-  'tree-node-label'(props: { data: TreeNodeData }): any;
-  'tree-node-tool'(props: { data: TreeNodeData }): any;
+  'tree-node-content'(_props: { data: TreeNodeData }): any;
+  'tree-node-label'(_props: { data: TreeNodeData }): any;
+  'tree-node-tool'(_props: { data: TreeNodeData }): any;
 }>();
 
 defineOptions({
@@ -48,6 +56,7 @@ const emit = defineEmits<{
   'node-contextmenu': [event: MouseEvent, data: TreeNodeData];
   'node-mouseenter': [event: MouseEvent, data: TreeNodeData];
   'node-click': [event: MouseEvent, data: TreeNodeData];
+  'node-dblclick': [event: MouseEvent, data: TreeNodeData];
 }>();
 
 provide('treeEmit', emit);
@@ -57,7 +66,10 @@ withDefaults(
     data: TreeNodeData[];
     nodeStatusMap: Map<Id, LayerNodeStatus>;
     indent?: number;
+    nextLevelIndentIncrement?: number;
     emptyText?: string;
+    /** 自定义判断节点是否可展开（即是否要展示为拥有子节点的形态）的函数 */
+    isExpandable?: IsExpandableFunction;
   }>(),
   {
     indent: 0,

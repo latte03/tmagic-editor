@@ -1,8 +1,8 @@
 <template>
   <div class="m-editor-data-source-methods">
-    <MagicTable :data="model[name]" :columns="methodColumns"></MagicTable>
+    <MagicTable :data="model[name]" :columns="displayColumns" :border="true"></MagicTable>
 
-    <div class="m-editor-data-source-methods-footer">
+    <div v-if="!isCompare" class="m-editor-data-source-methods-footer">
       <TMagicButton size="small" type="primary" :disabled="disabled" plain @click="createCodeHandler"
         >添加</TMagicButton
       >
@@ -21,33 +21,63 @@
 </template>
 
 <script setup lang="ts">
-import { TMagicButton } from '@tmagic/design';
-import type { FieldProps } from '@tmagic/form';
-import type { CodeBlockContent } from '@tmagic/schema';
+import { computed, type ComputedRef, inject, nextTick, onMounted, ref, useTemplateRef } from 'vue';
+import { cloneDeep } from 'lodash-es';
+
+import type { CodeBlockContent } from '@tmagic/core';
+import { TMagicButton, tMagicMessageBox } from '@tmagic/design';
+import {
+  type ContainerChangeEventData,
+  type DataSourceMethodsConfig,
+  type FieldProps,
+  type FormState,
+} from '@tmagic/form';
 import { type ColumnConfig, MagicTable } from '@tmagic/table';
 
 import CodeBlockEditor from '@editor/components/CodeBlockEditor.vue';
-import { useDataSourceMethod } from '@editor/hooks/use-data-source-method';
 import type { CodeParamStatement } from '@editor/type';
 
 defineOptions({
   name: 'MFieldsDataSourceMethods',
 });
 
-const props = withDefaults(
-  defineProps<
-    FieldProps<{
-      type: 'data-source-methods';
-    }>
-  >(),
-  {
-    disabled: false,
-  },
-);
+const props = withDefaults(defineProps<FieldProps<DataSourceMethodsConfig>>(), {
+  disabled: false,
+});
 
 const emit = defineEmits(['change']);
 
-const { codeConfig, codeBlockEditor, createCode, editCode, deleteCode, submitCode } = useDataSourceMethod();
+const mForm = inject<FormState | undefined>('mForm');
+/** 对比模式下隐藏新增/编辑/删除等操作按钮，仅保留只读展示。 */
+const isCompare = computed(() => Boolean(mForm?.isCompare));
+
+const codeConfig = ref<Omit<CodeBlockContent, 'content'> & { content: string }>();
+const codeBlockEditorRef = useTemplateRef<InstanceType<typeof CodeBlockEditor>>('codeBlockEditor');
+
+let editIndex = -1;
+
+const editMethod = (method: CodeBlockContent, index: number) => {
+  let codeContent: string = '({ params, dataSource, app }) => {\n  // place your code here\n}';
+
+  if (method.content) {
+    if (typeof method.content !== 'string') {
+      codeContent = method.content.toString();
+    } else {
+      codeContent = method.content;
+    }
+  }
+
+  codeConfig.value = {
+    ...cloneDeep(method),
+    content: codeContent,
+  };
+
+  editIndex = index;
+
+  nextTick(() => {
+    codeBlockEditorRef.value?.show();
+  });
+};
 
 const methodColumns: ColumnConfig[] = [
   {
@@ -65,7 +95,7 @@ const methodColumns: ColumnConfig[] = [
   {
     label: '参数',
     prop: 'params',
-    formatter: (params: CodeParamStatement[]) => params.map((item) => item.name).join(', '),
+    formatter: (params: CodeParamStatement[] = []) => params.map((item) => item.name).join(', '),
   },
   {
     label: '操作',
@@ -73,16 +103,16 @@ const methodColumns: ColumnConfig[] = [
     actions: [
       {
         text: '编辑',
-        handler: (row: CodeBlockContent) => {
-          editCode(props.model, row.name);
-          emit('change', props.model[props.name]);
+        handler: (method: CodeBlockContent, index: number) => {
+          editMethod(method, index);
         },
       },
       {
         text: '删除',
         buttonType: 'danger',
-        handler: (row: CodeBlockContent) => {
-          deleteCode(props.model, row.name);
+        handler: async (row: CodeBlockContent, index: number) => {
+          await tMagicMessageBox.confirm(`确定删除${row.name}?`, '提示');
+          props.model[props.name].splice(index, 1);
           emit('change', props.model[props.name]);
         },
       },
@@ -90,15 +120,67 @@ const methodColumns: ColumnConfig[] = [
   },
 ];
 
+/** 对比模式下移除「操作」列（编辑/删除按钮），仅保留只读列。 */
+const displayColumns = computed<ColumnConfig[]>(() =>
+  isCompare.value ? methodColumns.filter((col) => !col.actions) : methodColumns,
+);
+
 const createCodeHandler = () => {
-  createCode(props.model);
+  codeConfig.value = {
+    name: '',
+    content: '({ params, dataSource, app, flowState }) => {\n  // place your code here\n}',
+    params: [],
+  };
 
-  emit('change', props.model[props.name]);
+  editIndex = -1;
+
+  nextTick(() => {
+    codeBlockEditorRef.value?.show();
+  });
 };
 
-const submitCodeHandler = (values: CodeBlockContent) => {
-  submitCode(values);
+const submitCodeHandler = (value: CodeBlockContent, data: ContainerChangeEventData) => {
+  if (editIndex > -1) {
+    emit('change', value, {
+      modifyKey: editIndex,
+      changeRecords: (data.changeRecords || []).map((item) => ({
+        propPath: `${props.prop}.${editIndex}.${item.propPath}`,
+        value: item.value,
+      })),
+    });
+  } else {
+    const modifyKey = props.model[props.name].length;
+    emit('change', value, {
+      modifyKey,
+      changeRecords: [
+        {
+          propPath: `${props.prop}.${modifyKey}`,
+          value,
+        },
+      ],
+    });
+  }
 
-  emit('change', props.model[props.name]);
+  editIndex = -1;
+  codeConfig.value = void 0;
+
+  codeBlockEditorRef.value?.hide();
 };
+
+/** 由 DataSourceConfigPanel 注入：打开数据源详情后需要直接打开的方法名 */
+const editingMethodName = inject<ComputedRef<string | undefined>>(
+  'editingDataSourceMethodName',
+  computed(() => ''),
+);
+
+onMounted(() => {
+  const methodName = editingMethodName.value;
+  if (!methodName) return;
+
+  const methods: CodeBlockContent[] = props.model[props.name] || [];
+  const index = methods.findIndex((method) => method.name === methodName);
+  if (index === -1) return;
+
+  editMethod(methods[index], index);
+});
 </script>

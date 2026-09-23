@@ -1,6 +1,7 @@
 <template>
   <div class="m-editor-scroll-viewer-container" ref="container">
-    <div ref="el" :style="style">
+    <div ref="target" :style="style">
+      <slot name="before"></slot>
       <slot></slot>
     </div>
 
@@ -25,11 +26,11 @@
 </template>
 
 <script lang="ts" setup>
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref, useTemplateRef, watch } from 'vue';
 
 import { isNumber } from '@tmagic/utils';
 
-import type { ScrollViewerEvent } from '@editor/type';
+import type { ScrollViewerEvent, ScrollViewerSlots } from '@editor/type';
 import { ScrollViewer } from '@editor/utils/scroll-viewer';
 
 import ScrollBar from './ScrollBar.vue';
@@ -37,6 +38,8 @@ import ScrollBar from './ScrollBar.vue';
 defineOptions({
   name: 'MEditorScrollViewer',
 });
+
+defineSlots<ScrollViewerSlots>();
 
 const props = withDefaults(
   defineProps<{
@@ -63,8 +66,8 @@ const props = withDefaults(
   },
 );
 
-const container = ref<HTMLDivElement>();
-const el = ref<HTMLDivElement>();
+const containerEl = useTemplateRef<HTMLDivElement>('container');
+const el = useTemplateRef<HTMLDivElement>('target');
 const style = computed(
   () => `
         width: ${isNumber(`${props.width}`) ? `${props.width}px` : props.width};
@@ -80,9 +83,9 @@ const scrollHeight = ref(0);
 let scrollViewer: ScrollViewer;
 
 onMounted(() => {
-  if (!container.value || !el.value) return;
+  if (!containerEl.value || !el.value) return;
   scrollViewer = new ScrollViewer({
-    container: container.value,
+    container: containerEl.value,
     target: el.value,
     zoom: props.zoom,
     correctionScrollSize: props.correctionScrollSize,
@@ -123,6 +126,6 @@ const hScrollHandler = (delta: number) => {
 };
 
 defineExpose({
-  container,
+  container: containerEl,
 });
 </script>

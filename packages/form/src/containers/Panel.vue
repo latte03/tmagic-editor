@@ -3,13 +3,23 @@
     v-if="items && items.length"
     class="box-card m-form-panel"
     :body-style="{ display: expand ? 'block' : 'none' }"
+    :flat="config.flat"
   >
     <template #header>
       <div style="width: 100%; display: flex; align-items: center">
-        <TMagicButton style="padding: 0" link :icon="expand ? CaretBottom : CaretRight" @click="expand = !expand">
+        <TMagicButton
+          style="padding: 0; margin-right: 10px"
+          link
+          :icon="expand ? ArrowDown : ArrowRight"
+          @click="expand = !expand"
+          v-if="!hideExpand"
+        >
         </TMagicButton>
+        <slot name="header">
+          <span style="cursor: pointer" @click="expand = !expand">{{ filter(config.title) }}</span>
+        </slot>
+
         <span v-if="config && config.extra" v-html="config.extra" class="m-form-tip"></span>
-        <slot name="header">{{ filter(config.title) }}</slot>
       </div>
     </template>
 
@@ -20,7 +30,7 @@
         <div style="flex: 1">
           <Container
             v-for="(item, index) in items"
-            :key="item[mForm?.keyProp || '__key'] ?? index"
+            :key="(item as Record<string, any>)[mForm?.keyProp || '__key'] ?? index"
             :config="item"
             :model="name ? model[name] : model"
             :lastValues="name ? lastValues[name] : lastValues"
@@ -29,6 +39,7 @@
             :size="size"
             :disabled="disabled"
             :label-width="config.labelWidth || labelWidth"
+            :label-position="config.labelPosition || labelPosition"
             @change="changeHandler"
             @addDiffCount="onAddDiffCount()"
           ></Container>
@@ -40,7 +51,7 @@
       <template v-else>
         <Container
           v-for="(item, index) in items"
-          :key="item[mForm?.keyProp || '__key'] ?? index"
+          :key="(item as Record<string, any>)[mForm?.keyProp || '__key'] ?? index"
           :config="item"
           :model="name ? model[name] : model"
           :lastValues="name ? lastValues[name] : lastValues"
@@ -49,6 +60,7 @@
           :size="size"
           :disabled="disabled"
           :label-width="config.labelWidth || labelWidth"
+          :label-position="config.labelPosition || labelPosition"
           @change="changeHandler"
           @addDiffCount="onAddDiffCount()"
         ></Container>
@@ -59,11 +71,11 @@
 
 <script setup lang="ts">
 import { computed, inject, ref } from 'vue';
-import { CaretBottom, CaretRight } from '@element-plus/icons-vue';
+import { ArrowDown, ArrowRight } from '@element-plus/icons-vue';
 
 import { TMagicButton, TMagicCard } from '@tmagic/design';
 
-import { FormState, PanelConfig } from '../schema';
+import type { ContainerChangeEventData, FormState, PanelConfig } from '../schema';
 import { filterFunction } from '../utils/form';
 
 import Container from './Container.vue';
@@ -79,12 +91,17 @@ const props = defineProps<{
   config: PanelConfig;
   name?: string;
   labelWidth?: string;
+  labelPosition?: 'top' | 'left' | 'right';
   prop?: string;
   size?: string;
   disabled?: boolean;
+  hideExpand?: boolean;
 }>();
 
-const emit = defineEmits(['change', 'addDiffCount']);
+const emit = defineEmits<{
+  change: [v: any, eventData: ContainerChangeEventData];
+  addDiffCount: [];
+}>();
 
 const mForm = inject<FormState | undefined>('mForm');
 
@@ -94,6 +111,15 @@ const items = computed(() => props.config.items);
 
 const filter = (config: any) => filterFunction(mForm, config, props);
 
-const changeHandler = () => emit('change', props.model);
+const changeHandler = (v: any, eventData: ContainerChangeEventData) => {
+  emit('change', props.model, eventData);
+};
 const onAddDiffCount = () => emit('addDiffCount');
+
+defineExpose({
+  getExpand: () => expand.value,
+  setExpand: (v: boolean) => {
+    expand.value = v;
+  },
+});
 </script>

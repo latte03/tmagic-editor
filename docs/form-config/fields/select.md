@@ -16,12 +16,33 @@
     { text: '选项2', value: 2 }
   ]
 }]">
-  <template #source>
-    <p>
-      type为'select'
-    </p>
-  </template>
+<template #source>
+
+<p>
+type为'select'
+</p>
+</template>
 </demo-block>
+
+## 选项值校验
+
+可在 `rules` 中开启 `typeMatch`，校验当前值是否落在 `options` 中（`multiple` 时校验数组元素）。详见[表单校验](/form-config/rules.md)。
+
+```ts
+{
+  type: 'select',
+  name: 'status',
+  text: '状态',
+  options: [
+    { text: '启用', value: 1 },
+    { text: '禁用', value: 0 },
+  ],
+  rules: [
+    { required: true, message: '请选择状态' },
+    { typeMatch: true, message: '状态值不合法' },
+  ],
+}
+```
 
 ## 有禁用选项
 
@@ -35,11 +56,12 @@
     { text: '选项2', value: 2, disabled: true }
   ]
 }]">
-  <template #source>
-    <p>
-      在 opitons 选项配置中，设定 disabled 值为 true，即可禁用该选项
-    </p>
-  </template>
+<template #source>
+
+<p>
+在 options 选项配置中，设定 disabled 值为 true，即可禁用该选项
+</p>
+</template>
 </demo-block>
 
 ## 禁用状态
@@ -57,11 +79,12 @@
     { text: '选项2', value: 2 }
   ]
 }]">
-  <template #source>
-    <p>
-      为 el-select 设置 disabled 属性，则整个选择器不可用
-    </p>
-  </template>
+<template #source>
+
+<p>
+为 el-select 设置 disabled 属性，则整个选择器不可用
+</p>
+</template>
 </demo-block>
 
 ## 基础多选
@@ -110,11 +133,12 @@
     }
   ]
 }]">
-  <template #source>
-    <p>
-      配置group为true
-    </p>
-  </template>
+<template #source>
+
+<p>
+配置group为true
+</p>
+</template>
 </demo-block>
 
 ## 创建条目
@@ -155,46 +179,84 @@
     value: option => `${option.id}`,
   }
 }]">
-  <template #source>
-    <p>
-      配置remote为true，然后配置option，而不是options
-    </p>
-  </template>
+<template #source>
+
+<p>
+配置remote为true，然后配置option，而不是options
+</p>
+</template>
 </demo-block>
+
+同时在 `src/main.ts` 中需要自定义实现请求
+
+```typescript
+app.use(MagicForm, {
+  request: async (options: any) => {
+    // 自定义请求实现
+  },
+});
+```
 
 :::tip
 如果 Select 的绑定值为对象类型，请务必指定 valueKey 作为它的唯一性标识。
 :::
 
 ## Select Attributes
-| 参数      | 说明          | 类型      | 可选值                           | 默认值  |
-|---------- |-------------- |---------- |--------------------------------  |-------- |
-| name | 绑定值 | string | — | — |
-| placeholder  | 输入框占位文本   | string |       —        |      —   |
-| text     | 表单标签   | string |       —        |      —   |
-| disabled  | 是否禁用    | boolean / [FilterFunction](https://github.com/Tencent/tmagic-editor/blob/master/packages/form/src/schema.ts)   | — | false   |
-| multiple | 是否多选 | boolean | — | false |
-| valueKey | 作为 value 唯一标识的键名，绑定值为对象类型时必填 | string | — | value |
-| allowCreate | 是否允许用户创建新条目 | boolean | — | false |
-| remote | 是否为远程搜索 | boolean | — | false |
-| group | 是否选择分组 | boolean | — | false |
-| onChange  | 值变化时触发的函数  | [OnChangeHandler ](https://github.com/Tencent/tmagic-editor/blob/master/packages/form/src/schema.ts)   | — | -   |
-| options  | 选项  | Array   | — | -   |
-| option  | 选项  | Object   | — | -   |
+
+| 参数        | 说明                                              | 类型                                                                                                                                                     | 可选值 | 默认值 |
+| ----------- | ------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- | ------ | ------ |
+| name        | 绑定值                                            | string                                                                                                                                                   | —      | —      |
+| placeholder | 输入框占位文本                                    | string                                                                                                                                                   | —      | —      |
+| text        | 表单标签                                          | string                                                                                                                                                   | —      | —      |
+| disabled    | 是否禁用                                          | boolean / `FilterFunction` | —      | false  |
+| multiple    | 是否多选                                          | boolean                                                                                                                                                  | —      | false  |
+| valueKey    | 作为 value 唯一标识的键名，绑定值为对象类型时必填 | string                                                                                                                                                   | —      | value  |
+| allowCreate | 是否允许用户创建新条目                            | boolean                                                                                                                                                  | —      | false  |
+| remote      | 是否为远程搜索                                    | boolean                                                                                                                                                  | —      | false  |
+| group       | 是否选择分组                                      | boolean                                                                                                                                                  | —      | false  |
+| onChange    | 值变化时触发的函数                                | `OnChangeHandler`          | —      | -      |
+| options     | 选项                                              | Array                                                                                                                                                    | —      | -      |
+| option      | 选项                                              | Object                                                                                                                                                   | —      | -      |
+
+::: details 查看 FilterFunction / OnChangeHandler 及关联类型定义
+<<< @/../packages/form-schema/src/base.ts#FilterFunction{ts}
+
+<<< @/../packages/form-schema/src/base.ts#OnChangeHandler{ts}
+
+<<< @/../packages/form-schema/src/base.ts#OnChangeHandlerData{ts}
+
+<<< @/../packages/form-schema/src/base.ts#ChangeRecord{ts}
+
+<<< @/../packages/form-schema/src/base.ts#FormValue{ts}
+:::
+
+
+## 配置类型
+
+::: details 查看 SelectConfig 配置类型定义
+<<< @/../packages/form-schema/src/base.ts#SelectConfig{ts}
+
+<<< @/../packages/form-schema/src/base.ts#FormItem{ts}
+
+<<< @/../packages/form-schema/src/base.ts#Input{ts}
+
+:::
 
 ## options item
-| 参数      | 说明          | 类型      | 可选值                           | 默认值  |
-|---------- |-------------- |---------- |--------------------------------  |-------- |
-| text |  | 选项的标签 | string/number/object | — | — |
-| value | 选项的值	 | string | — | — |
-| disabled  | 是否禁用    | boolean | — | false   |
-| label |  string | — | — | — |
-| options | Array | — | — | — |
+
+| 参数     | 说明     | 类型       | 可选值               | 默认值 |
+| -------- | -------- | ---------- | -------------------- | ------ | --- |
+| text     |          | 选项的标签 | string/number/object | —      | —   |
+| value    | 选项的值 | string     | —                    | —      |
+| disabled | 是否禁用 | boolean    | —                    | false  |
+| label    | string   | —          | —                    | —      |
+| options  | Array    | —          | —                    | —      |
 
 ## option
-| 参数      | 说明          | 类型      | 可选值                           | 默认值  |
-|---------- |-------------- |---------- |--------------------------------  |-------- |
-| url | string | — | — | — |
-| root | string | — | — | — |
-| text | string / Function | — | — | — |
-| value | string / Function | — | — | — |
+
+| 参数  | 说明              | 类型 | 可选值 | 默认值 |
+| ----- | ----------------- | ---- | ------ | ------ |
+| url   | string            | —    | —      | —      |
+| root  | string            | —    | —      | —      |
+| text  | string / Function | —    | —      | —      |
+| value | string / Function | —    | —      | —      |

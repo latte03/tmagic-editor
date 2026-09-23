@@ -1,6 +1,6 @@
 import KeyController, { KeyControllerEvent } from 'keycon';
 
-import { isPage, isPageFragment } from '@tmagic/utils';
+import { isPageOrFragment } from '@tmagic/utils';
 
 import { KeyBindingCacheItem, KeyBindingCommand, KeyBindingItem } from '@editor/type';
 
@@ -19,8 +19,8 @@ class Keybinding extends BaseService {
     [KeyBindingCommand.DELETE_NODE]: () => {
       const nodes = editorService.get('nodes');
 
-      if (!nodes || isPage(nodes[0]) || isPageFragment(nodes[0])) return;
-      editorService.remove(nodes);
+      if (!nodes || isPageOrFragment(nodes[0])) return;
+      editorService.remove(nodes, { historySource: 'shortcut' });
     },
     [KeyBindingCommand.COPY_NODE]: () => {
       const nodes = editorService.get('nodes');
@@ -29,13 +29,13 @@ class Keybinding extends BaseService {
     [KeyBindingCommand.CUT_NODE]: () => {
       const nodes = editorService.get('nodes');
 
-      if (!nodes || isPage(nodes[0]) || isPageFragment(nodes[0])) return;
+      if (!nodes || isPageOrFragment(nodes[0])) return;
       editorService.copy(nodes);
-      editorService.remove(nodes);
+      editorService.remove(nodes, { historySource: 'shortcut' });
     },
     [KeyBindingCommand.PASTE_NODE]: () => {
       const nodes = editorService.get('nodes');
-      nodes && editorService.paste({ offsetX: 10, offsetY: 10 });
+      nodes && editorService.paste({ offsetX: 10, offsetY: 10 }, undefined, { historySource: 'shortcut' });
     },
     [KeyBindingCommand.UNDO]: () => {
       editorService.undo();
@@ -144,6 +144,18 @@ class Keybinding extends BaseService {
 
       for (const [type = '', eventType = 'keydown'] of when) {
         const cacheItem: KeyBindingCacheItem = { type, command, keybinding, eventType, bound: false };
+
+        if (
+          this.bindingList.find(
+            (item) =>
+              item.command === command &&
+              item.eventType === eventType &&
+              item.type === type &&
+              item.keybinding === keybinding,
+          )
+        ) {
+          continue;
+        }
 
         this.bindingList.push(cacheItem);
       }

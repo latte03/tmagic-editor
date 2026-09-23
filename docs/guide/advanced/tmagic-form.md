@@ -2,7 +2,7 @@
 
 tmagic-editor的表单配置，核心就是使用了 @tmagic/form 来作为渲染器。@tmagic/form 是一个 npm 包，可以安装它，在你想使用的地方单独使用。
 
-@tmagic/form 接受一个表单配置，详细配置可参考[表单 api](../../api/form/form-props.md)。
+@tmagic/form 接受一个表单配置，详细配置可参考[表单 api](../../api/form/form-props.md)。字段校验（含 `typeMatch` 类型匹配）见[表单校验](../../form-config/rules.md)。
 
 ## 安装
 
@@ -21,7 +21,7 @@ $ npm install @tmagic/element-plus-adapter @tmagic/design element-plus -S
 
 ### 引入 @tmagic/form
 
-MagicForm 使用了 element-ui 库
+MagicForm 使用了 element-plus 组件库
 
 在 main.js 中写入以下内容：
 
@@ -45,10 +45,29 @@ app.use(MagicForm);
 app.mount("#app");
 ```
 
+也可在安装时传入自定义字段登记（叶子 / innerConfig / typeMatch / component），详见[表单校验 - 扩展自定义 type 规则](../../form-config/rules.md#扩展自定义-type-规则)：
 
-以上代码便完成了 @tmagic/form 的引入。需要注意的是，ElementUI 的样式文件需要单独引入。
+```javascript
+import MyField from './MyField.vue';
 
-在 App.Vue 中写入以下内容：
+app.use(MagicForm, {
+  fields: {
+    'my-field': {
+      component: MyField,
+      typeMatch: (value, { message }) => {
+        if (typeof value !== 'string') {
+          return message || 'my-field 应为字符串';
+        }
+      },
+    },
+  },
+});
+```
+
+
+以上代码便完成了 @tmagic/form 的引入。需要注意的是，Element Plus 的样式文件需要单独引入。
+
+在 App.vue 中写入以下内容：
 
 ```html
 <m-form :config="config" :init-values="initValue"></m-form>

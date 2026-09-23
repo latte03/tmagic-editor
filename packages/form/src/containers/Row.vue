@@ -2,10 +2,11 @@
   <TMagicRow :gutter="10">
     <Col
       v-for="(col, index) in config.items"
-      :key="col[mForm?.keyProp || '__key'] ?? index"
+      :key="(col as Record<string, any>)[mForm?.keyProp || '__key'] ?? index"
       :span="col.span || config.span || 24 / config.items.length"
       :config="col"
       :labelWidth="config.labelWidth || labelWidth"
+      :labelPosition="config.labelPosition || labelPosition"
       :expandMore="expandMore"
       :model="name ? model[name] : model"
       :lastValues="name ? lastValues[name] : lastValues"
@@ -24,7 +25,7 @@ import { inject } from 'vue';
 
 import { TMagicRow } from '@tmagic/design';
 
-import { FormState, RowConfig } from '../schema';
+import type { ContainerChangeEventData, FormState, RowConfig } from '../schema';
 
 import Col from './Col.vue';
 
@@ -39,16 +40,22 @@ const props = defineProps<{
   config: RowConfig;
   name: string;
   labelWidth?: string;
+  labelPosition?: 'top' | 'left' | 'right';
   prop?: string;
   size?: string;
   expandMore?: boolean;
   disabled?: boolean;
 }>();
 
-const emit = defineEmits(['change', 'addDiffCount']);
+const emit = defineEmits<{
+  change: [v: any, eventData: ContainerChangeEventData];
+  addDiffCount: [];
+}>();
 
 const mForm = inject<FormState | undefined>('mForm');
 
-const changeHandler = () => emit('change', props.name ? props.model[props.name] : props.model);
+const changeHandler = (v: any, eventData: ContainerChangeEventData) => {
+  emit('change', props.name ? props.model[props.name] : props.model, eventData);
+};
 const onAddDiffCount = () => emit('addDiffCount');
 </script>

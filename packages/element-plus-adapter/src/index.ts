@@ -1,4 +1,5 @@
 import {
+  ElAlert,
   ElAutocomplete,
   ElBadge,
   ElButton,
@@ -22,12 +23,13 @@ import {
   ElIcon,
   ElInput,
   ElInputNumber,
+  ElLoading,
   ElMessage,
   ElMessageBox,
   ElOption,
   ElOptionGroup,
   ElPagination,
-  ElPopover,
+  ElPopconfirm,
   ElRadio,
   ElRadioButton,
   ElRadioGroup,
@@ -37,19 +39,17 @@ import {
   ElStep,
   ElSteps,
   ElSwitch,
-  ElTable,
-  ElTableColumn,
   ElTabPane,
   ElTabs,
   ElTag,
   ElTimePicker,
   ElTooltip,
-  ElTree,
   ElUpload,
   useZIndex,
 } from 'element-plus';
 
 import type {
+  AlertProps,
   AutocompleteProps,
   BadgeProps,
   ButtonProps,
@@ -62,6 +62,7 @@ import type {
   ColorPickerProps,
   ColProps,
   DatePickerProps,
+  DesignPluginOptions,
   DialogProps,
   DividerProps,
   DrawerProps,
@@ -75,8 +76,7 @@ import type {
   OptionGroupProps,
   OptionProps,
   PaginationProps,
-  PluginOptions,
-  PopoverProps,
+  PopconfirmProps,
   RadioButtonProps,
   RadioGroupProps,
   RadioProps,
@@ -84,18 +84,19 @@ import type {
   StepProps,
   StepsProps,
   SwitchProps,
-  TableColumnProps,
   TableProps,
   TabPaneProps,
   TabsProps,
   TagProps,
   TimePickerProps,
   TooltipProps,
-  TreeProps,
   UploadProps,
 } from '@tmagic/design';
 
-const adapter: PluginOptions = {
+import Table from './Table.vue';
+
+const adapter: DesignPluginOptions = {
+  adapterType: 'element-plus',
   useZIndex,
   message: ElMessage,
   messageBox: ElMessageBox,
@@ -105,6 +106,11 @@ const adapter: PluginOptions = {
       props: (props: AutocompleteProps) => props,
     },
 
+    alert: {
+      component: ElAlert as any,
+      props: (props: AlertProps) => props,
+    },
+
     badge: {
       component: ElBadge as any,
       props: (props: BadgeProps) => props,
@@ -112,7 +118,12 @@ const adapter: PluginOptions = {
 
     button: {
       component: ElButton as any,
-      props: (props: ButtonProps) => props,
+      props: (props: ButtonProps) => {
+        return {
+          ...props,
+          type: props.type === 'default' ? '' : props.type,
+        };
+      },
     },
 
     card: {
@@ -230,11 +241,6 @@ const adapter: PluginOptions = {
       props: (props: PaginationProps) => props,
     },
 
-    popover: {
-      component: ElPopover as any,
-      props: (props: PopoverProps) => props,
-    },
-
     radio: {
       component: ElRadio as any,
       props: (props: RadioProps) => props,
@@ -262,7 +268,7 @@ const adapter: PluginOptions = {
 
     select: {
       component: ElSelect as any,
-      props: (props: SelectProps) => props,
+      props: (props: SelectProps) => ({ remoteShowSuffix: true, ...props }),
     },
 
     step: {
@@ -281,13 +287,8 @@ const adapter: PluginOptions = {
     },
 
     table: {
-      component: ElTable as any,
+      component: Table as any,
       props: (props: TableProps) => props,
-    },
-
-    tableColumn: {
-      component: ElTableColumn as any,
-      props: (props: TableColumnProps) => props,
     },
 
     tabPane: {
@@ -302,7 +303,13 @@ const adapter: PluginOptions = {
 
     tag: {
       component: ElTag as any,
-      props: (props: TagProps) => props,
+      props: (props: TagProps) => {
+        const VALID_TAG_TYPES = ['primary', 'success', 'info', 'warning', 'danger'];
+        if (props.type && !VALID_TAG_TYPES.includes(props.type)) {
+          return { ...props, type: 'primary' };
+        }
+        return props;
+      },
     },
 
     timePicker: {
@@ -315,16 +322,17 @@ const adapter: PluginOptions = {
       props: (props: TooltipProps) => props,
     },
 
-    tree: {
-      component: ElTree as any,
-      props: (props: TreeProps) => props,
-    },
-
     upload: {
       component: ElUpload as any,
       props: (props: UploadProps) => props,
     },
+
+    popconfirm: {
+      component: ElPopconfirm as any,
+      props: (props: PopconfirmProps) => props,
+    },
   },
+  loading: ElLoading.directive,
 };
 
 export default adapter;

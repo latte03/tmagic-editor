@@ -1,6 +1,8 @@
 # 基础概念
 我们通过讲述tmagic-editor的一些基础概念。帮助开发者可以了解tmagic-editor是如何运行以及如何在基础项目之上开发、使用它。
 
+[![alt 原理](/flow.png "原理")](/flow.png){target="_blank"}
+
 ## 编辑器
 编辑器基础布局上分为：左面板、工作区、右面板、工具栏，如下图。
 - **左面板**，包含了组件库的展示，以及工作区中已添加组件的组件树展示。
@@ -57,11 +59,6 @@ DSL 是编辑器搭建页面的最终产物（描述文件），其中包含了�
 
 ### runtime
 我们把页面统一称为 runtime，更具体的 runtime 概念可以查看[页面发布](./publish.html#runtime)。**runtime 是承载tmagic-editor项目页面的运行环境**。编辑器的工作区是 runtime 的一个具体实例，另一个就是我们发布上线后，用户访问的真实项目页面。
-
-### @tmagic/ui
-@tmagic/ui 包含了tmagic-editor的基础组件库，提供了容器、文本、按钮这样的基础组件。我们提供了不同语言框架的 @tmagic/ui，如 vue2 和 vue3。
-
-@tmagic/ui 和 runtime 是配套出现的，runtime 必须基于 @tmagic/ui 才可以实现渲染。因为 @tmagic/ui 需要提供 runtime 所需要的渲染器。
 
 ## 联动
 页面搭建过程中，会涉及到两种联动形式

@@ -1,5 +1,11 @@
 <template>
-  <Framework :disabled-page-fragment="disabledPageFragment">
+  <Framework
+    :disabled-page-fragment="disabledPageFragment"
+    :page-bar-sort-options="pageBarSortOptions"
+    :page-filter-function="pageFilterFunction"
+    :hide-sidebar="hideSidebar"
+    :theme="theme"
+  >
     <template #header>
       <slot name="header"></slot>
     </template>
@@ -16,7 +22,17 @@
 
     <template #sidebar>
       <slot name="sidebar" :editorService="editorService">
-        <Sidebar :data="sidebar" :layer-content-menu="layerContentMenu" :custom-content-menu="customContentMenu">
+        <Sidebar
+          :data="sidebar"
+          :layer-content-menu="layerContentMenu"
+          :custom-content-menu="customContentMenu"
+          :indent="treeIndent"
+          :next-level-indent-increment="treeNextLevelIndentIncrement"
+          :layer-node-is-expandable="layerNodeIsExpandable"
+          :can-drop-in="canDropIn"
+          :before-layer-node-dblclick="beforeLayerNodeDblclick"
+          @layer-node-dblclick="layerNodeDblclickHandler"
+        >
           <template #layer-panel-header>
             <slot name="layer-panel-header"></slot>
           </template>
@@ -31,6 +47,10 @@
 
           <template #layer-node-tool="{ data }">
             <slot name="layer-node-tool" :data="data"></slot>
+          </template>
+
+          <template #component-list="{ componentGroupList }">
+            <slot name="component-list" :component-group-list="componentGroupList"></slot>
           </template>
 
           <template #component-list-panel-header>
@@ -71,6 +91,7 @@
           :stage-content-menu="stageContentMenu"
           :custom-content-menu="customContentMenu"
         >
+          <template #stage-top><slot name="stage-top"></slot></template>
           <template #stage><slot name="stage"></slot></template>
           <template #workspace-content><slot name="workspace-content" :editorService="editorService"></slot></template>
         </Workspace>
@@ -80,11 +101,11 @@
     <template #props-panel>
       <slot name="props-panel">
         <PropsPanel
-          :extend-state="extendFormState"
           :disabled-show-src="disabledShowSrc"
-          @mounted="(instance: any) => $emit('props-panel-mounted', instance)"
-          @form-error="(e: any) => $emit('props-form-error', e)"
-          @submit-error="(e: any) => $emit('props-submit-error', e)"
+          @mounted="propsPanelMountedHandler"
+          @unmounted="propsPanelUnmountedHandler"
+          @form-error="propsPanelFormErrorHandler"
+          @submit-error="propsPanelSubmitErrorHandler"
         >
           <template #props-panel-header>
             <slot name="props-panel-header"></slot>
@@ -104,28 +125,34 @@
     </template>
 
     <template #page-bar><slot name="page-bar"></slot></template>
+    <template #page-bar-add-button><slot name="page-bar-add-button"></slot></template>
     <template #page-bar-title="{ page }"><slot name="page-bar-title" :page="page"></slot></template>
     <template #page-bar-popover="{ page }"><slot name="page-bar-popover" :page="page"></slot></template>
+    <template #page-list-popover="{ list }"><slot name="page-list-popover" :list="list"></slot></template>
   </Framework>
 </template>
 
 <script lang="ts" setup>
 import { EventEmitter } from 'events';
 
-import { provide } from 'vue';
+import { computed, provide } from 'vue';
 
-import type { MApp } from '@tmagic/schema';
+import type { MApp } from '@tmagic/core';
+import { M_THEME_KEY } from '@tmagic/design';
+import { FORM_CONTEXT_KEY } from '@tmagic/form';
 
+import { useEditorFormContext } from './hooks/use-form-context';
 import Framework from './layouts/Framework.vue';
 import TMagicNavMenu from './layouts/NavMenu.vue';
-import PropsPanel from './layouts/PropsPanel.vue';
+import FormPanel from './layouts/props-panel/FormPanel.vue';
+import PropsPanel from './layouts/props-panel/PropsPanel.vue';
 import Sidebar from './layouts/sidebar/Sidebar.vue';
 import Workspace from './layouts/workspace/Workspace.vue';
 import codeBlockService from './services/codeBlock';
 import componentListService from './services/componentList';
 import dataSourceService from './services/dataSource';
 import depService from './services/dep';
-import editorService, { type EditorService } from './services/editor';
+import editorService from './services/editor';
 import eventsService from './services/events';
 import historyService from './services/history';
 import keybindingService from './services/keybinding';
@@ -134,29 +161,24 @@ import stageOverlayService from './services/stageOverlay';
 import storageService from './services/storage';
 import uiService from './services/ui';
 import keybindingConfig from './utils/keybinding-config';
-import { defaultEditorProps, EditorProps } from './editorProps';
+import { defaultEditorProps, EditorProps, ENABLE_PROPS_FORM_VALIDATE } from './editorProps';
 import { initServiceEvents, initServiceState } from './initService';
-import type { EventBus, FrameworkSlots, PropsPanelSlots, Services, SidebarSlots, WorkspaceSlots } from './type';
+import type { TreeNodeData } from './type';
+import type { EditorSlots, EventBus, Services, StageOptions } from './type';
 
-defineSlots<
-  FrameworkSlots &
-    WorkspaceSlots &
-    SidebarSlots &
-    PropsPanelSlots & {
-      workspace(props: { editorService: EditorService }): any;
-      'workspace-content'(props: { editorService: EditorService }): any;
-    }
->();
+defineSlots<EditorSlots>();
 
 defineOptions({
   name: 'MEditor',
 });
 
 const emit = defineEmits<{
-  'props-panel-mounted': [instance: InstanceType<typeof PropsPanel>];
+  'props-panel-mounted': [instance: InstanceType<typeof FormPanel>];
+  'props-panel-unmounted': [];
   'update:modelValue': [value: MApp | null];
   'props-form-error': [e: any];
   'props-submit-error': [e: any];
+  'layer-node-dblclick': [event: MouseEvent, data: TreeNodeData];
 }>();
 
 const props = withDefaults(defineProps<EditorProps>(), defaultEditorProps);
@@ -181,7 +203,7 @@ initServiceState(props, services);
 keybindingService.register(keybindingConfig);
 keybindingService.registerEl('global');
 
-const stageOptions = {
+const stageOptions: StageOptions = {
   runtimeUrl: props.runtimeUrl,
   autoScrollIntoView: props.autoScrollIntoView,
   render: props.render,
@@ -189,13 +211,22 @@ const stageOptions = {
   canSelect: props.canSelect,
   updateDragEl: props.updateDragEl,
   isContainer: props.isContainer,
+  // sourceIds 为空表示从组件列表新增（尚无 id），否则是画布上拖动已有组件
+  canDropIn: props.canDropIn
+    ? (sourceIds, targetId) =>
+        props.canDropIn!(sourceIds, targetId, sourceIds.length === 0 ? 'stage-add' : 'stage-drag')
+    : undefined,
   containerHighlightClassName: props.containerHighlightClassName,
   containerHighlightDuration: props.containerHighlightDuration,
   containerHighlightType: props.containerHighlightType,
+  containerHighlightAddOnly: props.containerHighlightAddOnly,
   disabledDragStart: props.disabledDragStart,
   renderType: props.renderType,
   guidesOptions: props.guidesOptions,
   disabledMultiSelect: props.disabledMultiSelect,
+  alwaysMultiSelect: props.alwaysMultiSelect,
+  disabledFlashTip: props.disabledFlashTip,
+  beforeDblclick: props.beforeDblclick,
 };
 
 stageOverlayService.set('stageOptions', stageOptions);
@@ -204,8 +235,70 @@ provide('services', services);
 
 provide('codeOptions', props.codeOptions);
 provide('stageOptions', stageOptions);
+/** 是否启用「属性配置表单校验」联动能力，供 PropsPanel / FormPanel 判断校验失败时是否仍更新节点并记录错误 */
+// 同 isLargeStageContainer：用 computed 包一层，否则传下去的是 provide 那一刻的值快照，
+// props.enablePropsFormValidate 后续变化不会同步到子孙。
+provide(
+  ENABLE_PROPS_FORM_VALIDATE,
+  computed(() => props.enablePropsFormValidate ?? false),
+);
+/**
+ * 编辑器注入给整棵表单树的业务上下文（`services` / `stage`），属性面板、对比表单、
+ * 侧边栏里的嵌套 MForm 都通过 inject 自动继承。
+ *
+ * 业务方要追加自己的字段，在 `<MEditor>` 外层再 `provide(FORM_CONTEXT_KEY, computed(...))`
+ * 即可，配置回调统一通过 `mForm.xxx` 读取。
+ */
+provide(
+  FORM_CONTEXT_KEY,
+  useEditorFormContext(() => services),
+);
+
+// 用 computed 包一层再 provide，否则传下去的是 provide 那一刻的值快照，
+// props.isLargeStageContainer 后续变化不会同步到子孙（如 @tmagic/design/ColorPicker）。
+// 子孙侧 `inject<ComputedRef<boolean>>('isLargeStageContainer', computed(() => false))`
+// 用 `.value` 或模板自动解包读取即可拿到最新值。
+provide(
+  'isLargeStageContainer',
+  computed(() => props.isLargeStageContainer),
+);
+/**
+ * 把历史记录面板的自定义扩展 tab 提供给深层的 HistoryListPanel（它挂在 NavMenu 中，
+ * 以 markRaw component 形式渲染，无法直接通过 props 透传）。业务方可借此在历史记录
+ * 面板内追加自定义模块的历史 tab。
+ */
+provide('historyListExtraTabs', props.historyListExtraTabs);
 
 provide<EventBus>('eventBus', new EventEmitter());
+
+/**
+ * 把当前主题以响应式 ref 形式 provide 给后代，供包含 `Teleport` 的组件
+ * （如 `TMagicPopover` / `FloatingBox` / `ContentMenu`）在传送目标上挂 `m-theme--<theme>`
+ * 类，让主题级 CSS 变量在 portal 节点上也能命中。详见 `@tmagic/design/theme.ts`。
+ */
+provide(
+  M_THEME_KEY,
+  computed(() => props.theme ?? ''),
+);
+
+const propsPanelMountedHandler = (e: InstanceType<typeof FormPanel>) => {
+  emit('props-panel-mounted', e);
+};
+const propsPanelUnmountedHandler = () => {
+  emit('props-panel-unmounted');
+};
+
+const propsPanelSubmitErrorHandler = (e: any) => {
+  emit('props-submit-error', e);
+};
+
+const propsPanelFormErrorHandler = (e: any) => {
+  emit('props-form-error', e);
+};
+
+const layerNodeDblclickHandler = (event: MouseEvent, data: TreeNodeData) => {
+  emit('layer-node-dblclick', event, data);
+};
 
 defineExpose(services);
 </script>

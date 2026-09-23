@@ -13,16 +13,15 @@ runtime 的概念，是理解tmagic-editor项目页运行的重要概念，runti
 
 所以更深入描述，runtime 是tmagic-editor页面的渲染环境，提供不同场景下的能力封装。如果理解了tmagic-editor的设计，阅读了tmagic-editor的源码，可以发现，runtime 只是对tmagic-editor的渲染器做了一层包装，在不同 runtime 中，tmagic-editor的渲染逻辑和组件代码都是相同的。
 
-并且，由于tmagic-editor在编辑器中的模拟器是通过 iframe 渲染的，和tmagic-editor平台本身可以做到框架解耦，所以 runtime 也可以用不同框架开发。目前tmagic-editor提供了 vue2/vue3 和 react 的 runtime 示例。
+并且，由于tmagic-editor在编辑器中的模拟器是通过 iframe 渲染的，和tmagic-editor平台本身可以做到框架解耦，所以 runtime 也可以用不同框架开发。目前tmagic-editor提供了 vue 和 react 的 runtime 示例。
 
 各个 runtime 的作用除了作为不同场景下的渲染环境，同时也是不同环境的打包构建载体。tmagic-editor示例代码中的打包就是基于 runtime 进行的。
 
 ### 业务相关
-由于 runtime 是页面渲染的承载环境，其中会加载 @tmagic/ui 以及各个业务组件，业务发布项目页也是基于 runtime，所以在 runtime 中实现业务方的自定义逻辑是最合适的。runtime 可以提供一些全局 API，供业务组件调用。我们可以把下面的模拟器中的 runtime 视为一个业务方runtime。
+由于 runtime 是页面渲染的承载环境，其中会加载 `@tmagic/vue-container`（或 `@tmagic/react-container`）等基础渲染组件以及各个业务组件，业务发布项目页也是基于 runtime，所以在 runtime 中实现业务方的自定义逻辑是最合适的。runtime 可以提供一些全局 API，供业务组件调用。我们可以把下面的模拟器中的 runtime 视为一个业务方runtime。
 
 tmagic-editor提供了三个版本的 runtime 示例，可以参考：
-- [vue3 runtime](https://github.com/Tencent/tmagic-editor/blob/master/runtime/vue3)
-- [vue2 runtime](https://github.com/Tencent/tmagic-editor/blob/master/runtime/vue2)
+- [vue runtime](https://github.com/Tencent/tmagic-editor/blob/master/runtime/vue)
 - [react runtime](https://github.com/Tencent/tmagic-editor/blob/master/runtime/react)
 
 ### 真实页面渲染（Page）
@@ -66,7 +65,7 @@ import { defineConfig } from '@tmagic/cli';
 
 export default defineConfig({
   /** 组件目录或者npm包名 */
-  packages: [path.join(__dirname, '../../packages/ui')],
+  packages: [path.join(__dirname, '../../vue-components')],
   /** 组件文件后缀名，例如vue文件为.vue，tsx文件为.tsx，普通js文件则为.js */
   componentFileAffix: '.vue',
   /** npm 配置，用于当packages配置有npm包名时，可以自动安装npm包 */
@@ -114,7 +113,7 @@ tmagic-editor的页面发布，目前使用的是静态资源发布。而所有�
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Magic App</title>
-    <script src="https://unpkg.com/vue@next/dist/vue.runtime.global.js"></script>
+    <script src="https://unpkg.com/vue@3/dist/vue.runtime.global.js"></script>
     <script type="module" crossorigin src="assets/page.js"></script>
     <link rel="modulepreload" href="assets/App.10f9c9e1.js">
     <link rel="modulepreload" href="assets/vendor.1dc07625.js">
@@ -140,7 +139,7 @@ tmagic-editor的页面发布，目前使用的是静态资源发布。而所有�
     <title>Publish Page</title>
     <!-- 这里插入了项目相关的 DSL.js -->
     <script type="module" src="./DSL.js"></script>
-    <script src="https://unpkg.com/vue@next/dist/vue.runtime.global.js"></script>
+    <script src="https://unpkg.com/vue@3/dist/vue.runtime.global.js"></script>
     <script type="module" crossorigin src="assets/page.js"></script>
     <link rel="modulepreload" href="assets/App.10f9c9e1.js">
     <link rel="modulepreload" href="assets/vendor.1dc07625.js">

@@ -1,9 +1,9 @@
 <template>
   <TMagicInputNumber
     v-if="model"
-    v-model="model[name]"
+    v-model="value"
     clearable
-    controls-position="right"
+    :controls-position="isGlobalFlat ? '' : 'right'"
     :size="size"
     :max="config.max"
     :min="config.min"
@@ -16,11 +16,12 @@
 </template>
 
 <script lang="ts" setup>
-import { inject } from 'vue';
+import { inject, ref, watch } from 'vue';
 
 import { TMagicInputNumber } from '@tmagic/design';
 
 import type { FieldProps, FormState, NumberConfig } from '../schema';
+import { isGlobalFlat } from '../utils/config';
 import { useAddField } from '../utils/useAddField';
 
 defineOptions({
@@ -33,6 +34,18 @@ const emit = defineEmits<{
   change: [values: number];
   input: [values: number];
 }>();
+
+const value = ref<number>();
+
+watch(
+  () => props.model[props.name],
+  (v) => {
+    value.value = v;
+  },
+  {
+    immediate: true,
+  },
+);
 
 useAddField(props.prop);
 

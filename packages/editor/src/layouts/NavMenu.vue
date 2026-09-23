@@ -1,19 +1,26 @@
 <template>
   <div class="m-editor-nav-menu" :style="{ height: `${height}px` }" ref="navMenu">
-    <div v-for="key in keys" :class="`menu-${key}`" :key="key" :style="`width: ${columnWidth?.[key]}px`">
-      <ToolButton :data="item" v-for="(item, index) in buttons[key]" :key="index"></ToolButton>
-    </div>
+    <NavMenuColumn
+      v-for="key in keys"
+      :key="key"
+      :column-key="key"
+      :items="buttons[key]"
+      :width="columnWidth?.[key]"
+    ></NavMenuColumn>
   </div>
 </template>
 
 <script lang="ts" setup>
-import { computed, inject, markRaw, onBeforeUnmount, onMounted, ref } from 'vue';
+import { computed, markRaw, onBeforeUnmount, onMounted, useTemplateRef } from 'vue';
 import { Back, Delete, FullScreen, Grid, Memo, Right, ScaleToOriginal, ZoomIn, ZoomOut } from '@element-plus/icons-vue';
 
-import { NodeType } from '@tmagic/schema';
+import { NodeType } from '@tmagic/core';
 
-import ToolButton from '@editor/components/ToolButton.vue';
-import { ColumnLayout, MenuBarData, MenuButton, MenuComponent, MenuItem, Services } from '@editor/type';
+import { useServices } from '@editor/hooks/use-services';
+import { ColumnLayout, MenuBarData, MenuButton, MenuComponent, MenuItem } from '@editor/type';
+
+import HistoryListPanel from './history-list/HistoryListPanel.vue';
+import NavMenuColumn from './NavMenuColumn.vue';
 
 defineOptions({
   name: 'MEditorNavMenu',
@@ -30,15 +37,15 @@ const props = withDefaults(
   },
 );
 
-const services = inject<Services>('services');
-const uiService = services?.uiService;
+const { uiService, editorService, historyService } = useServices();
 
-const columnWidth = computed(() => services?.uiService.get('columnWidth'));
+const columnWidth = computed(() => uiService.get('columnWidth'));
 const keys = Object.values(ColumnLayout);
 
-const showGuides = computed((): boolean => uiService?.get('showGuides') ?? true);
-const showRule = computed((): boolean => uiService?.get('showRule') ?? true);
-const zoom = computed((): number => uiService?.get('zoom') ?? 1);
+const showGuides = computed((): boolean => uiService.get('showGuides'));
+const hasGuides = computed((): boolean => uiService.get('hasGuides'));
+const showRule = computed((): boolean => uiService.get('showRule'));
+const zoom = computed((): number => uiService.get('zoom'));
 
 const isMac = /mac os x/.test(navigator.userAgent.toLowerCase());
 const ctrl = isMac ? 'Command' : 'Ctrl';
@@ -69,11 +76,11 @@ const getConfig = (item: MenuItem): (MenuButton | MenuComponent)[] => {
         type: 'button',
         className: 'delete',
         icon: markRaw(Delete),
-        tooltip: `刪除(Delete)`,
-        disabled: () => services?.editorService.get('node')?.type === NodeType.PAGE,
+        tooltip: '刪除(Delete)',
+        disabled: () => editorService.get('node')?.type === NodeType.PAGE,
         handler: () => {
-          const node = services?.editorService.get('node');
-          node && services?.editorService.remove(node);
+          const node = editorService.get('node');
+          node && editorService.remove(node, { historySource: 'toolbar' });
         },
       });
       break;
@@ -83,8 +90,8 @@ const getConfig = (item: MenuItem): (MenuButton | MenuComponent)[] => {
         className: 'undo',
         icon: markRaw(Back),
         tooltip: `后退(${ctrl}+z)`,
-        disabled: () => !services?.historyService.state.canUndo,
-        handler: () => services?.editorService.undo(),
+        disabled: () => !historyService.canUndo('page', editorService.get('page')?.id),
+        handler: () => editorService.undo(),
       });
       break;
     case 'redo':
@@ -93,8 +100,16 @@ const getConfig = (item: MenuItem): (MenuButton | MenuComponent)[] => {
         className: 'redo',
         icon: markRaw(Right),
         tooltip: `前进(${ctrl}+Shift+z)`,
-        disabled: () => !services?.historyService.state.canRedo,
-        handler: () => services?.editorService.redo(),
+        disabled: () => !historyService.canRedo('page', editorService.get('page')?.id),
+        handler: () => editorService.redo(),
+      });
+      break;
+    case 'history-list':
+      // 历史记录面板：以 component 形式挂入，自带 popover；点击 nav 上的图标弹出。
+      config.push({
+        type: 'component',
+        className: 'history-list',
+        component: markRaw(HistoryListPanel),
       });
       break;
     case 'zoom-in':
@@ -143,6 +158,7 @@ const getConfig = (item: MenuItem): (MenuButton | MenuComponent)[] => {
       });
       break;
     case 'guides':
+      if (!hasGuides.value) break;
       config.push({
         type: 'button',
         className: 'guides',
@@ -179,10 +195,12 @@ const buttons = computed(() => {
   return data;
 });
 
+const navMenuEl = useTemplateRef<HTMLDivElement>('navMenu');
+
 const resizeObserver = new ResizeObserver(() => {
-  const rect = navMenu.value?.getBoundingClientRect();
+  const rect = navMenuEl.value?.getBoundingClientRect();
   if (rect) {
-    uiService?.set('navMenuRect', {
+    uiService.set('navMenuRect', {
       left: rect.left,
       top: rect.top,
       width: rect.width,
@@ -190,10 +208,11 @@ const resizeObserver = new ResizeObserver(() => {
     });
   }
 });
-const navMenu = ref<HTMLDivElement>();
+
 onMounted(() => {
-  navMenu.value && resizeObserver.observe(navMenu.value);
+  navMenuEl.value && resizeObserver.observe(navMenuEl.value);
 });
+
 onBeforeUnmount(() => {
   resizeObserver.disconnect();
 });

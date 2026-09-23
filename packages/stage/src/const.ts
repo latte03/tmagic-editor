@@ -1,7 +1,7 @@
 /*
  * Tencent is pleased to support the open source community by making TMagicEditor available.
  *
- * Copyright (C) 2023 THL A29 Limited, a Tencent company.  All rights reserved.
+ * Copyright (C) 2025 Tencent.  All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -24,6 +24,9 @@ export const DRAG_EL_ID_PREFIX = 'drag_el_';
 
 /** 高亮时需要在蒙层中创建一个占位节点，该节点的id前缀 */
 export const HIGHLIGHT_EL_ID_PREFIX = 'highlight_el_';
+
+/** 闪烁提示时需要在蒙层中创建一个占位节点，该节点的id前缀 */
+export const FLASH_EL_ID_PREFIX = 'flash_el_';
 
 export const CONTAINER_HIGHLIGHT_CLASS_NAME = 'tmagic-stage-container-highlight';
 
@@ -77,6 +80,7 @@ export const SELECTED_CLASS = 'tmagic-stage-selected-area';
 export enum AbleActionEventType {
   SELECT_PARENT = 'select-parent',
   REMOVE = 'remove',
+  RERENDER = 'rerender',
 }
 
 /** 将组件添加到容器的方式 */

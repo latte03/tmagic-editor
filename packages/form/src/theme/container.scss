@@ -1,0 +1,28 @@
+.tmagic-design-form-inline {
+  .m-form-container {
+    display: inline-flex;
+  }
+}
+
+.m-form-container {
+  &.has-tip {
+    display: flex;
+    align-items: baseline;
+
+    .tmagic-design-form-item {
+      flex: 1;
+    }
+  }
+
+  .tmagic-design-form-item {
+    &.show-after-diff {
+      background: rgb(225, 243, 216);
+    }
+    &.show-before-diff {
+      background: #f7dadd;
+    }
+  }
+  .m-form-title-extra {
+    margin-left: 8px;
+  }
+}

@@ -1,0 +1,93 @@
+import { inject, markRaw, useTemplateRef } from 'vue';
+import { CopyDocument, Delete, Edit } from '@element-plus/icons-vue';
+import { cloneDeep } from 'lodash-es';
+
+import ContentMenu from '@editor/components/ContentMenu.vue';
+import type { ContentMenuTarget, EventBus, MenuButton, MenuComponent, TreeNodeData } from '@editor/type';
+
+export const useContentMenu = () => {
+  const eventBus = inject<EventBus | null>('eventBus', null);
+  const menuRef = useTemplateRef<InstanceType<typeof ContentMenu>>('menu');
+
+  let selectId = '';
+  let selectData: TreeNodeData | null = null;
+
+  const getTarget = (): ContentMenuTarget | null => {
+    if (!selectId) {
+      return null;
+    }
+    return { id: selectId, data: selectData ?? undefined };
+  };
+
+  const menuData: (MenuButton | MenuComponent)[] = [
+    {
+      type: 'button',
+      text: '编辑',
+      icon: Edit,
+      display: ({ dataSourceService }) => dataSourceService.get('editable'),
+      handler: () => {
+        if (!selectId) {
+          return;
+        }
+
+        eventBus?.emit('edit-data-source', selectId);
+      },
+    },
+    {
+      type: 'button',
+      text: '复制并粘贴至当前',
+      icon: markRaw(CopyDocument),
+      handler: ({ dataSourceService }) => {
+        if (!selectId) {
+          return;
+        }
+
+        const ds = dataSourceService.getDataSourceById(selectId);
+        if (!ds) {
+          return;
+        }
+
+        dataSourceService.add(cloneDeep(ds), { historySource: 'tree-contextmenu' });
+      },
+    },
+    {
+      type: 'button',
+      text: '删除',
+      icon: Delete,
+      handler: () => {
+        if (!selectId) {
+          return;
+        }
+
+        eventBus?.emit('remove-data-source', selectId);
+      },
+    },
+  ];
+
+  const nodeContentMenuHandler = (event: MouseEvent, data: TreeNodeData) => {
+    event.preventDefault();
+
+    if (data.type === 'ds') {
+      menuRef.value?.show(event);
+      if (data.id) {
+        selectId = `${data.id}`;
+        selectData = data;
+      } else {
+        selectId = '';
+        selectData = null;
+      }
+    }
+  };
+
+  const contentMenuHideHandler = () => {
+    selectId = '';
+    selectData = null;
+  };
+
+  return {
+    menuData,
+    nodeContentMenuHandler,
+    contentMenuHideHandler,
+    getTarget,
+  };
+};

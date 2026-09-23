@@ -5,6 +5,7 @@ types
 
 .temp
 .cache
+temp
 
 # local env files
 .env.local
@@ -19,6 +20,7 @@ pnpm-debug.log*
 # Editor directories and files
 .idea
 .vscode
+.codebuddy
 *.suo
 *.ntvs*
 *.njsproj
@@ -26,7 +28,11 @@ pnpm-debug.log*
 *.sw?
 
 coverage
+.vitest
 
 auto-imports.d.ts
 components.d.ts
 docs/.vitepress/cache
+
+.eslintcache
+.npmrc

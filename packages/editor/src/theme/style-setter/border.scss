@@ -1,0 +1,65 @@
+.border-box-container {
+  display: flex;
+  --unuse-border-style: dashed;
+  .border-icon-container {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    width: 88px;
+    &-row {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      & + .border-icon-container-row {
+        margin-top: 8px;
+      }
+    }
+    .border-icon {
+      box-sizing: border-box;
+      width: 16px;
+      height: 16px;
+      border-width: 1px;
+      border-color: #111;
+      border-style: solid;
+      cursor: pointer;
+      & + .border-icon {
+        margin-left: 8px;
+      }
+      &.configured {
+        border-color: var(--el-color-success, var(--td-success-color, #2ba471));
+      }
+      &.active {
+        border-color: var(--el-color-primary);
+        border-width: 1px;
+        // border-color: var(--el-color-primary, var(--td-brand-color, #0052d9));
+      }
+      &.center {
+        border-width: 1px;
+      }
+      &.border-icon-top {
+        border-top-width: 2px;
+        border-style: solid var(--unuse-border-style) var(--unuse-border-style)
+          var(--unuse-border-style);
+      }
+      &.border-icon-right {
+        border-right-width: 2px;
+        border-style: var(--unuse-border-style) solid var(--unuse-border-style)
+          var(--unuse-border-style);
+      }
+      &.border-icon-bottom {
+        border-bottom-width: 2px;
+        border-style: var(--unuse-border-style) var(--unuse-border-style) solid
+          var(--unuse-border-style);
+      }
+      &.border-icon-left {
+        border-left-width: 2px;
+        border-style: var(--unuse-border-style) var(--unuse-border-style)
+          var(--unuse-border-style) solid;
+      }
+    }
+  }
+  .border-value-container {
+    margin-left: 16px;
+    flex: 1;
+  }
+}

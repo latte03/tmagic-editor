@@ -1,82 +1,87 @@
-import { FormConfig, FormState } from '@tmagic/form';
-import { DataSchema, DataSourceSchema } from '@tmagic/schema';
+import type { DataSchema, DataSourceFieldType, DataSourceSchema } from '@tmagic/core';
+import { type CascaderOption, type FormConfig, type TabConfig } from '@tmagic/form';
+import { dataSourceTemplateRegExp, getKeysArray, isArrayIndex, isNumber } from '@tmagic/utils';
 
 import BaseFormConfig from './formConfigs/base';
 import HttpFormConfig from './formConfigs/http';
 
-const fillConfig = (config: FormConfig): FormConfig => [
+const dataSourceFormConfig: TabConfig = {
+  type: 'tab',
+  items: [
+    {
+      title: '数据定义',
+      status: 'fields',
+      items: [
+        {
+          name: 'fields',
+          type: 'data-source-fields',
+          defaultValue: () => [],
+        },
+      ],
+    },
+    {
+      title: '方法定义',
+      status: 'methods',
+      items: [
+        {
+          name: 'methods',
+          type: 'data-source-methods',
+          defaultValue: () => [],
+        },
+      ],
+    },
+    {
+      title: '事件配置',
+      items: [
+        {
+          name: 'events',
+          src: 'datasource',
+          type: 'event-select',
+          defaultValue: [],
+        },
+      ],
+    },
+    {
+      title: 'mock数据',
+      items: [
+        {
+          name: 'mocks',
+          type: 'data-source-mocks',
+          defaultValue: () => [],
+        },
+      ],
+    },
+    {
+      title: '请求参数裁剪',
+      display: (_formState, { model }) => model.type === 'http',
+      items: [
+        {
+          name: 'beforeRequest',
+          type: 'vs-code',
+          parse: true,
+          autosize: { minRows: 10, maxRows: 30 },
+        },
+      ],
+    },
+    {
+      title: '响应数据裁剪',
+      display: (_formStat, { model }) => model.type === 'http',
+      items: [
+        {
+          name: 'afterResponse',
+          type: 'vs-code',
+          parse: true,
+          autosize: { minRows: 10, maxRows: 30 },
+        },
+      ],
+    },
+  ],
+};
+
+const fillConfig = <T = never>(config: FormConfig<T>): FormConfig<T> => [
   ...BaseFormConfig(),
   ...config,
-  {
-    type: 'tab',
-    items: [
-      {
-        title: '数据定义',
-        items: [
-          {
-            name: 'fields',
-            type: 'data-source-fields',
-            defaultValue: () => [],
-          },
-        ],
-      },
-      {
-        title: '方法定义',
-        items: [
-          {
-            name: 'methods',
-            type: 'data-source-methods',
-            defaultValue: () => [],
-          },
-        ],
-      },
-      {
-        title: '事件配置',
-        display: false,
-        items: [
-          {
-            name: 'events',
-            src: 'datasource',
-            type: 'event-select',
-          },
-        ],
-      },
-      {
-        title: 'mock数据',
-        items: [
-          {
-            name: 'mocks',
-            type: 'data-source-mocks',
-            defaultValue: () => [],
-          },
-        ],
-      },
-      {
-        title: '请求参数裁剪',
-        display: (formState: FormState, { model }: any) => model.type === 'http',
-        items: [
-          {
-            name: 'beforeRequest',
-            type: 'vs-code',
-            parse: true,
-            height: '600px',
-          },
-        ],
-      },
-      {
-        title: '响应数据裁剪',
-        display: (formState: FormState, { model }: any) => model.type === 'http',
-        items: [
-          {
-            name: 'afterResponse',
-            type: 'vs-code',
-            parse: true,
-            height: '600px',
-          },
-        ],
-      },
-    ],
-  },
+  dataSourceFormConfig,
 ];
 
 export const getFormConfig = (type: string, configs: Record<string, FormConfig>): FormConfig => {
@@ -118,7 +123,7 @@ export const getFormValue = (type: string, values: Partial<DataSourceSchema>): P
    * context：上下文对象
    *
    * interface Content {
-   *  app: AppCore;
+   *  app: TMagicApp;
    *  dataSource: HttpDataSource;
    * }
    *
@@ -135,7 +140,7 @@ export const getFormValue = (type: string, values: Partial<DataSourceSchema>): P
     * context：上下文对象
     *
     * interface Content {
-    *  app: AppCore;
+    *  app: TMagicApp;
     *  dataSource: HttpDataSource;
     * }
     *
@@ -152,7 +157,7 @@ export const getDisplayField = (dataSources: DataSourceSchema[], key: string) =>
   const displayState: { value: string; type: 'var' | 'text' }[] = [];
 
   // 匹配es6字符串模块
-  const matches = key.matchAll(/\$\{([\s\S]+?)\}/g);
+  const matches = key.matchAll(dataSourceTemplateRegExp);
   let index = 0;
   for (const match of matches) {
     if (typeof match.index === 'undefined') break;
@@ -166,9 +171,8 @@ export const getDisplayField = (dataSources: DataSourceSchema[], key: string) =>
     let dsText = '';
     let ds: DataSourceSchema | undefined;
     let fields: DataSchema[] | undefined;
-
     // 将模块解析成数据源对应的值
-    match[1].split('.').forEach((item, index) => {
+    getKeysArray(match[1]).forEach((item, index) => {
       if (index === 0) {
         ds = dataSources.find((ds) => ds.id === item);
         dsText += ds?.title || item;
@@ -176,9 +180,13 @@ export const getDisplayField = (dataSources: DataSourceSchema[], key: string) =>
         return;
       }
 
-      const field = fields?.find((field) => field.name === item);
-      fields = field?.fields;
-      dsText += `.${field?.title || item}`;
+      if (isNumber(item)) {
+        dsText += `[${item}]`;
+      } else {
+        const field = fields?.find((field) => field.name === item);
+        fields = field?.fields;
+        dsText += `.${field?.title || item}`;
+      }
     });
 
     displayState.push({
@@ -197,4 +205,120 @@ export const getDisplayField = (dataSources: DataSourceSchema[], key: string) =>
   }
 
   return displayState;
+};
+
+export const getCascaderOptionsFromFields = (
+  fields: DataSchema[] = [],
+  dataSourceFieldType: DataSourceFieldType[] = ['any'],
+): CascaderOption[] => {
+  const typeSet = new Set(dataSourceFieldType.length ? dataSourceFieldType : ['any']);
+  const includesAny = typeSet.has('any');
+
+  const result: CascaderOption[] = [];
+
+  for (const field of fields) {
+    const fieldType = field.type || 'any';
+    const isContainerType = fieldType === 'any' || fieldType === 'array' || fieldType === 'object';
+
+    const children = isContainerType ? getCascaderOptionsFromFields(field.fields, dataSourceFieldType) : [];
+
+    const matchesType = includesAny || typeSet.has(fieldType);
+
+    if (matchesType || (isContainerType && children.length)) {
+      result.push({
+        label: `${field.title || field.name}(${field.type})`,
+        value: field.name,
+        children,
+      });
+    }
+  }
+
+  return result;
+};
+
+/**
+ * 按字段名路径下钻 DataSchema。
+ * @param skipNumberIndices 为 true 时跳过数字段（模板路径中的数组下标，如 arr[0].x）
+ * @param allowArrayIndex 为 true 时识别数组下标。`number` 只能是下标；数字字符串先按当前层字段名匹配，没有同名字段时才当中下标
+ */
+export const resolveFieldByPath = (
+  fields: DataSchema[] | undefined,
+  fieldNames: Array<string | number>,
+  options: { skipNumberIndices?: boolean; allowArrayIndex?: boolean } = {},
+): {
+  ok: boolean;
+  field?: DataSchema;
+  fields: DataSchema[];
+  failedName?: string;
+  /** number 下标没有紧跟在数组字段后面 */
+  invalidArrayIndex?: boolean;
+  /** 路径停在数组下标上，当前值是数组元素 */
+  arrayElement?: boolean;
+  /** 数组没有子字段，元素类型未知 */
+  untypedArrayElement?: boolean;
+} => {
+  let currentFields = fields || [];
+  let field: DataSchema | undefined;
+  /** 刚消费了数组下标，路径若在此结束则当前值是数组元素 */
+  let atArrayElement = false;
+  let arrayIndexName = '';
+
+  for (const name of fieldNames) {
+    if (options.skipNumberIndices && isNumber(name)) {
+      continue;
+    }
+
+    const segment = `${name}`;
+    // number 不能当字段名。数字字符串仅在当前层没有同名字段时才当中下标，避免盖住名为 "0" 的子字段。
+    if (options.allowArrayIndex && isArrayIndex(name) && field?.type === 'array' && !atArrayElement) {
+      const namedField = typeof name === 'string' ? currentFields.find((item) => item.name === segment) : undefined;
+      if (!namedField) {
+        atArrayElement = true;
+        arrayIndexName = segment;
+        continue;
+      }
+    }
+
+    if (options.allowArrayIndex && typeof name === 'number') {
+      return { ok: false, fields: currentFields, failedName: segment, invalidArrayIndex: true };
+    }
+
+    atArrayElement = false;
+
+    if (!currentFields.length) {
+      return { ok: false, fields: currentFields, failedName: segment };
+    }
+    field = currentFields.find((item) => item.name === segment);
+    if (!field) {
+      return { ok: false, fields: currentFields, failedName: segment };
+    }
+    currentFields = field.fields || [];
+  }
+
+  if (atArrayElement && field?.type === 'array') {
+    const elementFields = field.fields || [];
+    const untypedArrayElement = elementFields.length === 0;
+    return {
+      ok: true,
+      arrayElement: true,
+      untypedArrayElement,
+      field: {
+        name: arrayIndexName,
+        // 有子字段时元素是这些字段组成的对象；没有子字段时类型未知，不能当成显式 any
+        type: untypedArrayElement ? 'any' : 'object',
+        fields: elementFields,
+      },
+      fields: elementFields,
+    };
+  }
+
+  return { field, ok: true, fields: currentFields };
+};
+
+export const getFieldType = (ds: DataSourceSchema | undefined, fieldNames: Array<string | number>) => {
+  const { ok, field, untypedArrayElement } = resolveFieldByPath(ds?.fields, fieldNames, {
+    allowArrayIndex: true,
+  });
+  if (!ok || untypedArrayElement) return '';
+  return field?.type || '';
 };

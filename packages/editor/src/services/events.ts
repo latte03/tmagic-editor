@@ -1,7 +1,7 @@
 /*
  * Tencent is pleased to support the open source community by making TMagicEditor available.
  *
- * Copyright (C) 2023 THL A29 Limited, a Tencent company.  All rights reserved.
+ * Copyright (C) 2025 Tencent.  All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,34 +18,32 @@
 
 import { reactive } from 'vue';
 import { cloneDeep } from 'lodash-es';
+import type { Writable } from 'type-fest';
 
-import { DEFAULT_EVENTS, DEFAULT_METHODS, EventOption } from '@tmagic/core';
+import type { EventOption, Id, MNode } from '@tmagic/core';
 import { toLine } from '@tmagic/utils';
 
-import type { ComponentGroup } from '@editor/type';
+import type { AsyncHookPlugin, SyncHookPlugin } from '@editor/type';
 
 import BaseService from './BaseService';
 
-let eventMap: Record<string, EventOption[]> = reactive({});
-let methodMap: Record<string, EventOption[]> = reactive({});
+const canUsePluginMethods = {
+  async: [] as const,
+  sync: ['setEvent', 'getEvent', 'setMethod', 'getMethod'] as const,
+};
+
+type AsyncMethodName = Writable<(typeof canUsePluginMethods)['async']>;
+type SyncMethodName = Writable<(typeof canUsePluginMethods)['sync']>;
+
+const eventMap: Record<string, EventOption[]> = reactive({});
+const methodMap: Record<string, EventOption[]> = reactive({});
 
 class Events extends BaseService {
   constructor() {
-    super([]);
-  }
-
-  public init(componentGroupList: ComponentGroup[]) {
-    componentGroupList.forEach((group) => {
-      group.items.forEach((element) => {
-        const type = toLine(element.type);
-        if (!this.getEvent(type)) {
-          this.setEvent(type, DEFAULT_EVENTS);
-        }
-        if (!this.getMethod(type)) {
-          this.setMethod(type, DEFAULT_METHODS);
-        }
-      });
-    });
+    super([
+      ...canUsePluginMethods.async.map((methodName) => ({ name: methodName, isAsync: true })),
+      ...canUsePluginMethods.sync.map((methodName) => ({ name: methodName, isAsync: false })),
+    ]);
   }
 
   public setEvents(events: Record<string, EventOption[]>) {
@@ -55,11 +53,11 @@ class Events extends BaseService {
   }
 
   public setEvent(type: string, events: EventOption[]) {
-    eventMap[toLine(type)] = [...DEFAULT_EVENTS, ...events];
+    eventMap[toLine(type)] = [...events];
   }
 
-  public getEvent(type: string): EventOption[] {
-    return cloneDeep(eventMap[toLine(type)] || DEFAULT_EVENTS);
+  public getEvent(type: string, _data: { node?: MNode | null } = {}): EventOption[] {
+    return cloneDeep(eventMap[toLine(type)]) || [];
   }
 
   public setMethods(methods: Record<string, EventOption[]>) {
@@ -69,22 +67,27 @@ class Events extends BaseService {
   }
 
   public setMethod(type: string, method: EventOption[]) {
-    methodMap[toLine(type)] = [...DEFAULT_METHODS, ...method];
+    methodMap[toLine(type)] = [...method];
   }
 
-  public getMethod(type: string) {
-    return cloneDeep(methodMap[toLine(type)] || DEFAULT_METHODS);
+  public getMethod(type: string, _data: { node?: MNode | null; targetId?: Id } = {}) {
+    return cloneDeep(methodMap[toLine(type)]) || [];
   }
 
   public resetState() {
-    eventMap = reactive({});
-    methodMap = reactive({});
+    // 原地清空而不是重新赋值，保留 reactive 代理身份，已建立的 computed / 渲染副作用才能收到更新
+    Object.keys(eventMap).forEach((type) => delete eventMap[type]);
+    Object.keys(methodMap).forEach((type) => delete methodMap[type]);
   }
 
   public destroy() {
     this.resetState();
     this.removeAllListeners();
     this.removeAllPlugins();
+  }
+
+  public usePlugin(options: AsyncHookPlugin<AsyncMethodName, Events> & SyncHookPlugin<SyncMethodName, Events>): void {
+    super.usePlugin(options);
   }
 }
 

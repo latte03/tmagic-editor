@@ -1,28 +1,47 @@
-import type { EventOption } from '@tmagic/core';
-import type { CustomTargetOptions } from '@tmagic/dep';
-import type { FormConfig, FormState } from '@tmagic/form';
-import type { DataSourceSchema, Id, MApp, MNode } from '@tmagic/schema';
+import type { ComputedRef, InjectionKey } from 'vue';
+
+import type { DataSourceSchema, EventOption, Id, MApp, MNode, MPage, MPageFragment } from '@tmagic/core';
+import type { FormConfig } from '@tmagic/form';
 import StageCore, {
   CONTAINER_HIGHLIGHT_CLASS_NAME,
   ContainerHighlightType,
-  type CustomizeMoveableOptionsCallbackConfig,
+  type CustomizeMoveableOptions,
   type GuidesOptions,
-  type MoveableOptions,
   RenderType,
   type UpdateDragEl,
 } from '@tmagic/stage';
+import { getIdFromEl } from '@tmagic/utils';
 
 import type {
+  CanDropInFunction,
   ComponentGroup,
+  CustomContentMenuFunction,
   DatasourceTypeOption,
+  HistoryListExtraTab,
+  IsExpandableFunction,
   MenuBarData,
   MenuButton,
   MenuComponent,
+  PageBarSortOptions,
   SideBarData,
   StageRect,
+  TreeNodeData,
 } from './type';
 
+/**
+ * 「属性配置表单校验」联动能力的 provide/inject 注入键。
+ * 使用 Symbol 避免与其它字符串键冲突，供 PropsPanel / FormPanel 注入判断校验失败时是否仍更新节点并记录错误。
+ *
+ * 注入值是 ComputedRef：Editor 用 `computed(() => props.enablePropsFormValidate ?? false)` 提供，
+ * 保证外部动态切换该 prop 时子孙组件能同步拿到最新值；子孙侧用 `.value` 读取。
+ */
+export const ENABLE_PROPS_FORM_VALIDATE: InjectionKey<ComputedRef<boolean>> = Symbol('enablePropsFormValidate');
+
 export interface EditorProps {
+  /** 是否是大屏模拟器容器，大屏容器时，左侧属性面板会扩展为两列（正常3列），颜色表单不扩展两列等 */
+  isLargeStageContainer?: boolean;
+
+  theme?: string;
   /** 页面初始值 */
   modelValue?: MApp;
   /** 左侧面板中的组件类型列表 */
@@ -31,6 +50,8 @@ export interface EditorProps {
   datasourceList?: DatasourceTypeOption[];
   /** 左侧面板配置 */
   sidebar?: SideBarData;
+  /** 是否隐藏左侧面板 */
+  hideSidebar?: boolean;
   /** 顶部工具栏配置 */
   menu?: MenuBarData;
   /** 组件树右键菜单 */
@@ -55,7 +76,7 @@ export interface EditorProps {
   datasourceConfigs?: Record<string, FormConfig>;
   datasourceEventMethodList?: Record<string, { events: EventOption[]; methods: EventOption[] }>;
   /** 画布中组件选中框的移动范围 */
-  moveableOptions?: MoveableOptions | ((config?: CustomizeMoveableOptionsCallbackConfig) => MoveableOptions);
+  moveableOptions?: CustomizeMoveableOptions;
   /** 编辑器初始化时默认选中的组件ID */
   defaultSelected?: Id;
   /** 拖入画布中容器时，识别到容器后给容器根dom加上的class */
@@ -64,26 +85,49 @@ export interface EditorProps {
   containerHighlightDuration?: number;
   /** 拖入画布中容器时，识别容器的操作类型 */
   containerHighlightType?: ContainerHighlightType;
+  /**
+   * 是否仅在新增组件（从组件列表拖入新组件）时才启用识别容器，
+   * 开启后在画布中拖动已有组件不会识别容器，默认 false
+   */
+  containerHighlightAddOnly?: boolean;
   /** 画布大小 */
   stageRect?: StageRect;
   /** monaco editor 的配置 */
   codeOptions?: { [key: string]: any };
   /** 禁用鼠标左键按下时就开始拖拽，需要先选中再可以拖拽 */
   disabledDragStart?: boolean;
-  /** 自定义依赖收集器，复制组件时会将关联依赖一并复制 */
-  collectorOptions?: CustomTargetOptions;
   /** 标尺配置 */
   guidesOptions?: Partial<GuidesOptions>;
   /** 禁止多选 */
   disabledMultiSelect?: boolean;
+  /**
+   * 始终启用多选模式：开启后无需按住 Ctrl/Meta，点击即多选；
+   * 默认 false。当 `disabledMultiSelect` 为 true 时本配置失效
+   */
+  alwaysMultiSelect?: boolean;
   /** 禁用页面片 */
   disabledPageFragment?: boolean;
+  /** 禁用「非点击画布选中组件时（如从图层树、面包屑等外部选中），对选中区域做高亮闪烁提示」，默认 false（即默认开启闪烁） */
+  disabledFlashTip?: boolean;
   /** 禁用双击在浮层中单独编辑选中组件 */
   disabledStageOverlay?: boolean;
+  /**
+   * 是否启用「属性配置表单校验」联动能力：开启后属性/样式表单校验失败时仍更新节点，
+   * 并把错误信息集中记录到 editorService，用于组件树标红提示与保存拦截；默认 false（关闭）。
+   */
+  enablePropsFormValidate?: boolean;
   /** 禁用属性配置面板右下角显示源码的按钮 */
   disabledShowSrc?: boolean;
+  /** 禁用数据源 */
+  disabledDataSource?: boolean;
+  /** 禁用代码块 */
+  disabledCodeBlock?: boolean;
+  /** 已选组件、代码编辑、数据源缩进配置 */
+  treeIndent?: number;
+  /** 已选组件、代码编辑、数据源子节点缩进增量配置 */
+  treeNextLevelIndentIncrement?: number;
   /** 中间工作区域中画布渲染的内容 */
-  render?: (stage: StageCore) => HTMLDivElement | Promise<HTMLDivElement>;
+  render?: (stage: StageCore) => HTMLDivElement | void | Promise<HTMLDivElement | void>;
   /** 选中时会在画布上复制出一个大小相同的dom，实际拖拽的是这个dom，此方法用于干预这个dom的生成方式 */
   updateDragEl?: UpdateDragEl;
   /** 用于设置画布上的dom是否可以被选中 */
@@ -91,21 +135,48 @@ export interface EditorProps {
   /** 用于设置画布上的dom是否可以被拖入其中 */
   isContainer?: (el: HTMLElement) => boolean | Promise<boolean>;
   /** 用于自定义组件树与画布的右键菜单 */
-  customContentMenu?: (menus: (MenuButton | MenuComponent)[], type: string) => (MenuButton | MenuComponent)[];
-  extendFormState?: (state: FormState) => Record<string, any> | Promise<Record<string, any>>;
+  customContentMenu?: CustomContentMenuFunction;
+  /** 用于自定义判断组件树节点是否可展开（即是否要展示为拥有子节点的形态） */
+  layerNodeIsExpandable?: IsExpandableFunction;
+  /**
+   * 用于自定义判断当前正在拖动的源是否可以拖入目标节点内部
+   *
+   * 同时覆盖以下两类场景，通过第三个参数 scene 区分：
+   * - `'layer'` ："已选组件"面板组件树拖动（返回 false 时仅禁用 inner，不影响 before/after）
+   * - `'stage'`：画布拖入组件（返回 false 时阻止该容器被高亮命中；适用于"组件列表拖入新组件"和"画布上拖动已有组件"两种细分情况）
+   *
+   * 注意：layer 场景目前只识别同步返回值；返回 Promise 时会按 true 处理（即允许）
+   */
+  canDropIn?: CanDropInFunction;
+  /** 画布双击前的钩子函数，返回 false 则阻止默认的双击行为 */
+  beforeDblclick?: (event: MouseEvent) => Promise<boolean | void> | boolean | void;
+  /** 组件树节点双击前的钩子函数，返回 false 则阻止默认的双击行为 */
+  beforeLayerNodeDblclick?: (event: MouseEvent, data: TreeNodeData) => Promise<boolean | void> | boolean | void;
+  /** 历史记录面板的自定义扩展 tab，追加在内置的页面/数据源/代码块 tab 之后 */
+  historyListExtraTabs?: HistoryListExtraTab[];
+  /** 页面顺序拖拽配置参数 */
+  pageBarSortOptions?: PageBarSortOptions;
+  /** 页面搜索函数 */
+  pageFilterFunction?: (page: MPage | MPageFragment, keyword: string) => boolean;
 }
 
 export const defaultEditorProps = {
   renderType: RenderType.IFRAME,
   disabledMultiSelect: false,
+  alwaysMultiSelect: false,
   disabledPageFragment: false,
+  disabledFlashTip: false,
   disabledStageOverlay: false,
   containerHighlightClassName: CONTAINER_HIGHLIGHT_CLASS_NAME,
   containerHighlightDuration: 800,
   containerHighlightType: ContainerHighlightType.DEFAULT,
+  containerHighlightAddOnly: false,
   disabledShowSrc: false,
+  disabledDataSource: false,
+  disabledCodeBlock: false,
   componentGroupList: () => [],
   datasourceList: () => [],
+  historyListExtraTabs: () => [],
   menu: () => ({ left: [], right: [] }),
   layerContentMenu: () => [],
   stageContentMenu: () => [],
@@ -114,7 +185,8 @@ export const defaultEditorProps = {
   eventMethodList: () => ({}),
   datasourceValues: () => ({}),
   datasourceConfigs: () => ({}),
-  canSelect: (el: HTMLElement) => Boolean(el.id),
+  canSelect: (el: HTMLElement) => Boolean(getIdFromEl()(el) && !el.dataset.tmagicPageFragmentContainerId),
   isContainer: (el: HTMLElement) => el.classList.contains('magic-ui-container'),
   codeOptions: () => ({}),
+  customContentMenu: (menus: (MenuButton | MenuComponent)[]) => menus,
 };

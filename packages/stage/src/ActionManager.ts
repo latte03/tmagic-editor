@@ -1,7 +1,7 @@
 /*
  * Tencent is pleased to support the open source community by making TMagicEditor available.
  *
- * Copyright (C) 2023 THL A29 Limited, a Tencent company.  All rights reserved.
+ * Copyright (C) 2025 Tencent.  All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,9 +21,8 @@ import KeyController from 'keycon';
 import { throttle } from 'lodash-es';
 import type { MoveableOptions, OnDragStart } from 'moveable';
 
-import { Env } from '@tmagic/core';
-import type { Id } from '@tmagic/schema';
-import { addClassName, getDocument, removeClassNameByClassName } from '@tmagic/utils';
+import type { Id } from '@tmagic/core';
+import { addClassName, Env, getDocument, getIdFromEl, removeClassNameByClassName } from '@tmagic/core';
 
 import {
   AbleActionEventType,
@@ -43,6 +42,7 @@ import StageMultiDragResize from './StageMultiDragResize';
 import type {
   ActionManagerConfig,
   ActionManagerEvents,
+  CanDropIn,
   CanSelect,
   CustomizeMoveableOptions,
   CustomizeMoveableOptionsCallbackConfig,
@@ -65,9 +65,9 @@ const defaultContainerHighlightDuration = 800;
  * @extends EventEmitter
  */
 export default class ActionManager extends EventEmitter {
-  private dr: StageDragResize;
-  private multiDr?: StageMultiDragResize;
-  private highlightLayer: StageHighlight;
+  private dr: StageDragResize | null = null;
+  private multiDr: StageMultiDragResize | null = null;
+  private highlightLayer: StageHighlight | null = null;
   /** 单选、多选、高亮的容器（蒙层的content） */
   private container: HTMLElement;
   /** 当前选中的节点 */
@@ -84,28 +84,39 @@ export default class ActionManager extends EventEmitter {
   private containerHighlightDuration: number;
   /** 将组件加入容器的操作方式 */
   private containerHighlightType?: ContainerHighlightType;
+  /** 是否仅在新增组件时才启用将组件加入容器 */
+  private containerHighlightAddOnly = false;
   private isAltKeydown = false;
   private getTargetElement: GetTargetElement;
   private getElementsFromPoint: GetElementsFromPoint;
   private canSelect: CanSelect;
   private isContainer?: IsContainer;
+  /** 见 ActionManagerConfig.canDropIn */
+  private canDropIn?: CanDropIn;
   private getRenderDocument: GetRenderDocument;
   private disabledMultiSelect = false;
+  /** 始终启用多选模式（无需按住 Ctrl/Meta），优先级低于 disabledMultiSelect */
+  private alwaysMultiSelect = false;
   private config: ActionManagerConfig;
 
-  private mouseMoveHandler = throttle(async (event: MouseEvent): Promise<void> => {
-    if ((event.target as HTMLDivElement)?.classList?.contains('moveable-direction')) {
-      return;
-    }
+  private mouseMoveHandler = throttle((event: MouseEvent): void => {
+    const handler = async () => {
+      if ((event.target as HTMLDivElement)?.classList?.contains('moveable-direction')) {
+        return;
+      }
 
-    const el = await this.getElementFromPoint(event);
-    if (!el) {
-      this.clearHighlight();
-      return;
-    }
+      const el = await this.getElementFromPoint(event);
+      const id = getIdFromEl()(el);
+      if (!id) {
+        this.clearHighlight();
+        return;
+      }
 
-    this.emit('mousemove', event);
-    this.highlight(el.id);
+      this.emit('mousemove', event);
+      this.highlight(id);
+    };
+
+    handler();
   }, throttleTime);
 
   constructor(config: ActionManagerConfig) {
@@ -115,17 +126,23 @@ export default class ActionManager extends EventEmitter {
     this.containerHighlightClassName = config.containerHighlightClassName || CONTAINER_HIGHLIGHT_CLASS_NAME;
     this.containerHighlightDuration = config.containerHighlightDuration || defaultContainerHighlightDuration;
     this.containerHighlightType = config.containerHighlightType;
+    this.containerHighlightAddOnly = config.containerHighlightAddOnly ?? false;
     this.disabledMultiSelect = config.disabledMultiSelect ?? false;
+    this.alwaysMultiSelect = config.alwaysMultiSelect ?? false;
     this.getTargetElement = config.getTargetElement;
     this.getElementsFromPoint = config.getElementsFromPoint;
-    this.canSelect = config.canSelect || ((el: HTMLElement) => !!el.id);
+    this.canSelect = config.canSelect || ((el: HTMLElement) => Boolean(getIdFromEl()(el)));
     this.getRenderDocument = config.getRenderDocument;
     this.isContainer = config.isContainer;
+    this.canDropIn = config.canDropIn;
 
     this.dr = this.createDr(config);
 
     if (!this.disabledMultiSelect) {
       this.multiDr = this.createMultiDr(config);
+      if (this.alwaysMultiSelect) {
+        this.isMultiSelectStatus = true;
+      }
     }
 
     this.highlightLayer = new StageHighlight({
@@ -140,9 +157,10 @@ export default class ActionManager extends EventEmitter {
 
   public disableMultiSelect() {
     this.disabledMultiSelect = true;
+    this.isMultiSelectStatus = false;
     if (this.multiDr) {
       this.multiDr.destroy();
-      this.multiDr = undefined;
+      this.multiDr = null;
     }
   }
 
@@ -152,6 +170,20 @@ export default class ActionManager extends EventEmitter {
     if (!this.multiDr) {
       this.multiDr = this.createMultiDr(this.config);
     }
+
+    if (this.alwaysMultiSelect) {
+      this.isMultiSelectStatus = true;
+    }
+  }
+
+  /**
+   * 设置是否始终启用多选模式（无需按住 Ctrl/Meta），
+   * 当 `disabledMultiSelect` 为 true 时本方法不会启用多选。
+   */
+  public setAlwaysMultiSelect(value: boolean) {
+    this.alwaysMultiSelect = value;
+    if (this.disabledMultiSelect) return;
+    this.isMultiSelectStatus = value;
   }
 
   /**
@@ -160,7 +192,7 @@ export default class ActionManager extends EventEmitter {
    * @param guidelines 参考线坐标数组
    */
   public setGuidelines(type: GuidesType, guidelines: number[]): void {
-    this.dr.setGuidelines(type, guidelines);
+    this.dr?.setGuidelines(type, guidelines);
     this.multiDr?.setGuidelines(type, guidelines);
   }
 
@@ -168,7 +200,7 @@ export default class ActionManager extends EventEmitter {
    * 清空所有参考线
    */
   public clearGuides(): void {
-    this.dr.clearGuides();
+    this.dr?.clearGuides();
     this.multiDr?.clearGuides();
   }
 
@@ -177,7 +209,7 @@ export default class ActionManager extends EventEmitter {
    * @param el 变更的元素
    */
   public updateMoveable(el?: HTMLElement): void {
-    this.dr.updateMoveable(el);
+    this.dr?.updateMoveable(el);
     // 多选时不可配置元素，因此不存在多选元素变更，不需要传el
     this.multiDr?.updateMoveable();
   }
@@ -187,7 +219,7 @@ export default class ActionManager extends EventEmitter {
    */
   public isSelectedEl(el: HTMLElement): boolean {
     // 有可能dom已经重新渲染，不再是原来的dom了，所以这里判断id，而不是判断el === this.selectedDom
-    return el.id === this.selectedEl?.id;
+    return getIdFromEl()(el) === getIdFromEl()(this.selectedEl);
   }
 
   public setSelectedEl(el: HTMLElement | null): void {
@@ -203,7 +235,7 @@ export default class ActionManager extends EventEmitter {
   }
 
   public getMoveableOption<K extends keyof MoveableOptions>(key: K): MoveableOptions[K] | undefined {
-    if (this.dr.getTarget()) {
+    if (this.dr?.getTarget()) {
       return this.dr.getOption(key);
     }
     if (this.multiDr?.targetList.length) {
@@ -224,8 +256,32 @@ export default class ActionManager extends EventEmitter {
     let stopped = false;
     const stop = () => (stopped = true);
     for (const el of els) {
-      if (!el.id.startsWith(GHOST_EL_ID_PREFIX) && (await this.isElCanSelect(el, event, stop))) {
+      if (!getIdFromEl()(el)?.startsWith(GHOST_EL_ID_PREFIX) && (await this.isElCanSelect(el, event, stop))) {
         if (stopped) break;
+        return el;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * 获取鼠标下方第二个可选中元素（跳过最上层），用于双击穿透选中下方元素
+   * @param event 鼠标事件
+   * @returns 鼠标下方第二个可选中元素，不存在时返回 null
+   */
+  public async getNextElementFromPoint(event: MouseEvent): Promise<HTMLElement | null> {
+    const els = this.getElementsFromPoint(event as Point);
+
+    let stopped = false;
+    const stop = () => (stopped = true);
+    let skippedFirst = false;
+    for (const el of els) {
+      if (!getIdFromEl()(el)?.startsWith(GHOST_EL_ID_PREFIX) && (await this.isElCanSelect(el, event, stop))) {
+        if (stopped) break;
+        if (!skippedFirst) {
+          skippedFirst = true;
+          continue;
+        }
         return el;
       }
     }
@@ -270,7 +326,7 @@ export default class ActionManager extends EventEmitter {
   public select(el: HTMLElement | null, event?: MouseEvent): void {
     this.setSelectedEl(el);
     this.clearSelectStatus(SelectStatus.MULTI_SELECT);
-    this.dr.select(el, event);
+    this.dr?.select(el, event);
   }
 
   public multiSelect(ids: Id[]): void {
@@ -299,6 +355,7 @@ export default class ActionManager extends EventEmitter {
       el = this.getTargetElement(id);
     } catch (error) {
       this.clearHighlight();
+      console.warn('getTargetElement error:', error);
       return;
     }
 
@@ -309,14 +366,14 @@ export default class ActionManager extends EventEmitter {
     }
     if (el === this.highlightedEl || !el) return;
 
-    this.highlightLayer.highlight(el);
+    this.highlightLayer?.highlight(el);
     this.highlightedEl = el;
     this.emit('highlight', el);
   }
 
   public clearHighlight(): void {
     this.setHighlightEl(undefined);
-    this.highlightLayer.clearHighlight();
+    this.highlightLayer?.clearHighlight();
   }
 
   /**
@@ -328,7 +385,7 @@ export default class ActionManager extends EventEmitter {
       this.multiDr?.clearSelectStatus();
       this.selectedElList = [];
     } else {
-      this.dr.clearSelectStatus();
+      this.dr?.clearSelectStatus();
     }
   }
 
@@ -342,10 +399,28 @@ export default class ActionManager extends EventEmitter {
     if (!doc) return;
 
     const els = this.getElementsFromPoint(event);
+    // 取出源元素的节点 id 列表（多选拖动时为多个；从组件列表拖入时为空数组）
+    const sourceIds: Id[] = excludeElList
+      .map((el) => (el instanceof HTMLElement ? getIdFromEl()(el) : undefined))
+      .filter((id): id is string => Boolean(id));
 
     for (const el of els) {
-      if (!el.id.startsWith(GHOST_EL_ID_PREFIX) && (await this.isContainer?.(el)) && !excludeElList.includes(el)) {
-        addClassName(el, doc, this.containerHighlightClassName);
+      const targetId = getIdFromEl()(el);
+      if (!targetId?.startsWith(GHOST_EL_ID_PREFIX) && (await this.isContainer?.(el)) && !excludeElList.includes(el)) {
+        // 用户配置的钩子可以：
+        //   - 返回 false 阻止某些源拖入命中的容器（例如禁止 button 拖入 list）
+        //   - 返回 Id 将拖入目标重定向到另一个容器（例如把命中的 list 重定向到其内层的 list-content）
+        let highlightEl: HTMLElement = el;
+        if (targetId && this.canDropIn) {
+          const result = this.canDropIn(sourceIds, targetId);
+          if (result === false) continue;
+          if (typeof result === 'string' || typeof result === 'number') {
+            const redirectedEl = this.getTargetElement(result);
+            if (!redirectedEl) continue;
+            highlightEl = redirectedEl;
+          }
+        }
+        addClassName(highlightEl, doc, this.containerHighlightClassName);
         break;
       }
     }
@@ -356,10 +431,15 @@ export default class ActionManager extends EventEmitter {
    * 标记的作用：1、高亮容器，给用户一个加入容器的交互感知；2、释放鼠标后，通过标记的标志找到要加入的容器
    * @param event 鼠标事件
    * @param excludeElList 计算鼠标所在容器时要排除的元素列表
+   * @param isAdd 当前操作是否为新增组件（从组件列表拖入），开启 containerHighlightAddOnly 时只有新增才会标记
    * @returns timeoutId，调用方在鼠标移走时要取消该timeout，阻止标记
    */
-  public delayedMarkContainer(event: MouseEvent, excludeElList: Element[] = []): NodeJS.Timeout | undefined {
-    if (this.canAddToContainer()) {
+  public delayedMarkContainer(
+    event: MouseEvent,
+    excludeElList: Element[] = [],
+    isAdd = false,
+  ): NodeJS.Timeout | undefined {
+    if (this.canAddToContainer(isAdd)) {
       return globalThis.setTimeout(() => {
         this.addContainerHighlightClassName(event, excludeElList);
       }, this.containerHighlightDuration);
@@ -368,7 +448,12 @@ export default class ActionManager extends EventEmitter {
   }
 
   public getDragStatus() {
-    return this.dr.getDragStatus();
+    return this.dr?.getDragStatus();
+  }
+
+  public updateMoveableOptions(): void {
+    this.dr?.updateMoveable();
+    this.multiDr?.updateMoveable();
   }
 
   public destroy(): void {
@@ -377,9 +462,16 @@ export default class ActionManager extends EventEmitter {
     this.container.removeEventListener('mouseleave', this.mouseLeaveHandler);
     this.container.removeEventListener('wheel', this.mouseWheelHandler);
     this.container.removeEventListener('dblclick', this.dblclickHandler);
-    this.dr.destroy();
+    this.selectedEl = null;
+    this.selectedElList = [];
+
+    this.dr?.destroy();
     this.multiDr?.destroy();
-    this.highlightLayer.destroy();
+    this.highlightLayer?.destroy();
+
+    this.dr = null;
+    this.multiDr = null;
+    this.highlightLayer = null;
   }
 
   public on<Name extends keyof ActionManagerEvents, Param extends ActionManagerEvents[Name]>(
@@ -406,7 +498,7 @@ export default class ActionManager extends EventEmitter {
     const dr = new StageDragResize({
       container: config.container,
       disabledDragStart: config.disabledDragStart,
-      moveableOptions: this.changeCallback(config.moveableOptions, false),
+      moveableOptions: config.moveableOptions && this.changeCallback(config.moveableOptions, false),
       dragResizeHelper: createDrHelper(),
       getRootContainer: config.getRootContainer,
       getRenderDocument: config.getRenderDocument,
@@ -426,12 +518,15 @@ export default class ActionManager extends EventEmitter {
         this.emit('select-parent');
       })
       .on(AbleActionEventType.REMOVE, () => {
-        const drTarget = this.dr.getTarget();
+        const drTarget = this.dr?.getTarget();
         if (!drTarget) return;
         const data: RemoveEventData = {
           data: [{ el: drTarget }],
         };
         this.emit('remove', data);
+      })
+      .on(AbleActionEventType.RERENDER, () => {
+        this.emit('rerender');
       })
       .on('drag-start', (e: OnDragStart) => {
         this.emit('drag-start', e);
@@ -448,7 +543,7 @@ export default class ActionManager extends EventEmitter {
       });
     const multiDr = new StageMultiDragResize({
       container: config.container,
-      moveableOptions: this.changeCallback(config.moveableOptions, true),
+      moveableOptions: config.moveableOptions && this.changeCallback(config.moveableOptions, true),
       dragResizeHelper: createDrHelper(),
       getRootContainer: config.getRootContainer,
       getRenderDocument: config.getRenderDocument,
@@ -469,7 +564,10 @@ export default class ActionManager extends EventEmitter {
     return multiDr;
   }
 
-  private changeCallback(options: CustomizeMoveableOptions, isMulti: boolean): CustomizeMoveableOptions {
+  private changeCallback(
+    options: CustomizeMoveableOptions,
+    isMulti: boolean,
+  ): MoveableOptions | (() => MoveableOptions) {
     // 在actionManager才能获取到各种参数，在这里传好参数有比较好的扩展性
     if (typeof options === 'function') {
       return () => {
@@ -477,9 +575,9 @@ export default class ActionManager extends EventEmitter {
         if (typeof options === 'function') {
           const cfg: CustomizeMoveableOptionsCallbackConfig = {
             targetEl: this.selectedEl,
-            targetElId: this.selectedEl?.id,
+            targetElId: getIdFromEl()(this.selectedEl),
             targetEls: this.selectedElList,
-            targetElIds: this.selectedElList?.map((item) => item.id),
+            targetElIds: this.selectedElList?.map((item) => getIdFromEl()(item) || ''),
             isMulti,
             document: this.getRenderDocument(),
           };
@@ -507,7 +605,7 @@ export default class ActionManager extends EventEmitter {
     }
 
     // 判断元素是否已在多选列表
-    const existIndex = this.selectedElList.findIndex((selectedDom) => selectedDom.id === el.id);
+    const existIndex = this.selectedElList.findIndex((selectedDom) => getIdFromEl()(selectedDom) === getIdFromEl()(el));
     if (existIndex !== -1) {
       // 再次点击取消选中
       if (this.selectedElList.length > 1) {
@@ -519,9 +617,13 @@ export default class ActionManager extends EventEmitter {
   }
 
   /**
-   * 当前状态下能否将组件加入容器，默认是鼠标悬停一段时间加入，alt模式则是按住alt+鼠标悬停一段时间加入
+   * 当前状态下能否将组件加入容器，默认是鼠标悬停一段时间加入，alt模式则是按住alt+鼠标悬停一段时间加入；
+   * 开启containerHighlightAddOnly时，画布中拖动已有组件不能加入容器
+   * @param isAdd 当前操作是否为新增组件
    */
-  private canAddToContainer(): boolean {
+  private canAddToContainer(isAdd = false): boolean {
+    if (this.containerHighlightAddOnly && !isAdd) return false;
+
     return (
       this.containerHighlightType === ContainerHighlightType.DEFAULT ||
       (this.containerHighlightType === ContainerHighlightType.ALT && this.isAltKeydown)
@@ -534,10 +636,10 @@ export default class ActionManager extends EventEmitter {
    */
   private markContainerEnd(): HTMLElement | null {
     const doc = this.getRenderDocument();
-    if (doc && this.canAddToContainer()) {
-      return removeClassNameByClassName(doc, this.containerHighlightClassName);
-    }
-    return null;
+    if (!doc) return null;
+
+    const markedContainer = removeClassNameByClassName(doc, this.containerHighlightClassName);
+    return this.canAddToContainer() ? markedContainer : null;
   }
 
   private initMouseEvent(): void {
@@ -564,13 +666,14 @@ export default class ActionManager extends EventEmitter {
     });
     // ctrl+tab切到其他窗口，需要将多选状态置为false
     KeyController.global.on('blur', () => {
-      if (!this.disabledMultiSelect) {
+      if (!this.disabledMultiSelect && !this.alwaysMultiSelect) {
         this.isMultiSelectStatus = false;
       }
+      this.isAltKeydown = false;
     });
     KeyController.global.keyup(ctrl, (e) => {
       e.inputEvent.preventDefault();
-      if (!this.disabledMultiSelect) {
+      if (!this.disabledMultiSelect && !this.alwaysMultiSelect) {
         this.isMultiSelectStatus = false;
       }
     });
@@ -591,29 +694,33 @@ export default class ActionManager extends EventEmitter {
   /**
    * 在down事件中集中cpu处理画布中选中操作渲染，在up事件中再通知外面的编辑器更新
    */
-  private mouseDownHandler = async (event: MouseEvent): Promise<void> => {
-    this.clearHighlight();
-    event.stopImmediatePropagation();
-    event.stopPropagation();
+  private mouseDownHandler = (event: MouseEvent): void => {
+    const handler = async () => {
+      this.clearHighlight();
+      event.stopImmediatePropagation();
+      event.stopPropagation();
 
-    if (this.isStopTriggerSelect(event)) return;
+      if (this.isStopTriggerSelect(event)) return;
 
-    // 点击状态下不触发高亮事件
-    this.container.removeEventListener('mousemove', this.mouseMoveHandler);
+      // 点击状态下不触发高亮事件
+      this.container.removeEventListener('mousemove', this.mouseMoveHandler);
 
-    // 判断触发多选还是单选
-    if (this.isMultiSelectStatus) {
-      await this.beforeMultiSelect(event);
-      if (this.selectedElList.length > 0) {
-        this.emit('before-multi-select', this.selectedElList);
+      // 判断触发多选还是单选
+      if (this.isMultiSelectStatus) {
+        await this.beforeMultiSelect(event);
+        if (this.selectedElList.length > 0) {
+          this.emit('before-multi-select', this.selectedElList);
+        }
+      } else {
+        const el = await this.getElementFromPoint(event);
+        if (!el) return;
+        this.emit('before-select', el, event);
       }
-    } else {
-      const el = await this.getElementFromPoint(event);
-      if (!el) return;
-      this.emit('before-select', el, event);
-    }
 
-    getDocument().addEventListener('mouseup', this.mouseUpHandler);
+      getDocument().addEventListener('mouseup', this.mouseUpHandler);
+    };
+
+    handler();
   };
 
   private isStopTriggerSelect(event: MouseEvent): boolean {

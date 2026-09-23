@@ -1,7 +1,7 @@
 /*
  * Tencent is pleased to support the open source community by making TMagicEditor available.
  *
- * Copyright (C) 2023 THL A29 Limited, a Tencent company.  All rights reserved.
+ * Copyright (C) 2025 Tencent.  All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,12 +16,12 @@
  * limitations under the License.
  */
 
-import { createDiv, getDocument, injectStyle } from '@tmagic/utils';
+import { createDiv, getDocument, injectStyle } from '@tmagic/core';
 
 import { Mode, ZIndex } from './const';
 import Rule from './Rule';
 import type { MaskEvents, RuleOptions } from './types';
-import { getScrollParent, isFixedParent } from './util';
+import { getScrollParent, isDocumentVisible, isElementVisible, isFixedParent, scrollElementIntoView } from './util';
 
 const wrapperClassName = 'editor-mask-wrapper';
 
@@ -108,28 +108,50 @@ export default class StageMask extends Rule {
 
   /**
    * 初始化视窗和蒙层监听，监听元素是否在视窗区域、监听mask蒙层所在的wrapper大小变化
-   * @description 初始化视窗和蒙层监听
+   * @description 初始化视窗和蒙层监听；切换到新页面 DOM 时重置滚动
    * @param page 页面Dom节点
    */
   public observe(page: HTMLElement): void {
     if (!page) return;
 
+    const pageChanged = this.page !== page;
+
     this.page = page;
     this.initObserverIntersection();
     this.initObserverWrapper();
+
+    if (pageChanged) {
+      // runtime 按 pageId 重挂载后，滚动容器（多为 documentElement）可能仍残留上一页偏移；
+      // 新页默认从顶部展示：重置页面与 mask 滚动，并立刻 scroll() 刷新 transform/标尺。
+      // syncPageSize 在宽高为 0 时会提前返回，不能依赖它刷新视觉状态。
+      // 若 select 已先 scrollIntoView，由 StageCore 在 page-el-update 后重新触发一次补回。
+      this.pageScrollParent?.scrollTo({ top: 0, left: 0 });
+      this.scrollTop = 0;
+      this.scrollLeft = 0;
+      this.scroll();
+    }
+
+    // 页面切换后立即同步一次；ResizeObserver 首次回调可能仍上报旧页/0 尺寸
+    this.syncPageSize();
   }
 
   /**
-   * 处理页面大小变更，同步页面和mask大小
+   * 处理页面大小变更，同步页面和 mask 大小
+   * @description 仅处理当前 page 且仍挂载在文档中的 entry；非当前页、已卸载或宽高为 0 的回调会被忽略
    * @param entries ResizeObserverEntry，获取页面最新大小
    */
   public pageResize(entries: ResizeObserverEntry[]): void {
-    const [entry] = entries;
-    const { clientHeight, clientWidth } = entry.target;
-    this.setHeight(clientHeight);
-    this.setWidth(clientWidth);
+    if (!this.page || !entries.length) return;
 
-    this.scroll();
+    // 取当前 page 对应 entry，避免 batch 中首项是旧页时整批被丢弃
+    const entry = entries.find((item) => item.target === this.page);
+    if (!entry) return;
+
+    const { target } = entry;
+    // 旧页卸载后仍可能回调，已断开连接的节点不再同步尺寸
+    if (!target.isConnected) return;
+
+    this.applyPageSize(target.clientWidth, target.clientHeight);
   }
 
   /**
@@ -154,12 +176,30 @@ export default class StageMask extends Rule {
     this.setMode(isFixedParent(el) ? Mode.FIXED : Mode.ABSOLUTE);
   }
 
+  /**
+   * 将元素滚动到画布可视区域内
+   * @description 页面不可见时不做滚动：此时滚动既无视觉效果，又会记录错误的滚动偏移
+   * @param el 目标元素
+   */
   public scrollIntoView(el: Element): void {
+    if (!this.isPageVisible()) return;
+
     // 不可以有横向滚动
     if (!this.page || el.getBoundingClientRect().left >= this.page.scrollWidth) return;
 
-    el.scrollIntoView();
+    const scrollParent = getScrollParent(el as HTMLElement);
+
+    if (scrollParent && scrollParent !== this.pageScrollParent) {
+      this.scrollIntoView(scrollParent);
+      return;
+    }
+
     if (!this.pageScrollParent) return;
+
+    // 不使用原生 scrollIntoView，避免编辑器画布外层滚动容器被浏览器连带滚动导致整个 stage 位移，
+    // 只滚动页面所在的滚动容器
+    scrollElementIntoView(el, this.pageScrollParent);
+
     this.scrollLeft = this.pageScrollParent.scrollLeft;
     this.scrollTop = this.pageScrollParent.scrollTop;
 
@@ -170,12 +210,13 @@ export default class StageMask extends Rule {
    * 销毁实例
    */
   public destroy(): void {
+    super.destroy();
+
     this.content?.remove();
     this.page = null;
     this.pageScrollParent = null;
+    this.intersectionObserver?.disconnect();
     this.wrapperResizeObserver?.disconnect();
-
-    super.destroy();
   }
 
   public on<Name extends keyof MaskEvents, Param extends MaskEvents[Name]>(
@@ -201,6 +242,10 @@ export default class StageMask extends Rule {
         (entries) => {
           entries.forEach((entry) => {
             const { target, intersectionRatio } = entry;
+
+            // 页面不可见时不滚动，同时保留监听，等页面恢复可见后由 IntersectionObserver 重新回调
+            if (!this.isPageVisible()) return;
+
             if (intersectionRatio <= 0) {
               this.scrollIntoView(target);
             }
@@ -227,6 +272,12 @@ export default class StageMask extends Rule {
         const { clientHeight, clientWidth } = entry.target;
         this.wrapperHeight = clientHeight;
         this.wrapperWidth = clientWidth;
+
+        if (this.mode === Mode.FIXED) {
+          this.content.style.width = `${this.wrapperWidth}px`;
+          this.content.style.height = `${this.wrapperHeight}px`;
+        }
+
         this.setMaxScrollLeft();
         this.setMaxScrollTop();
       });
@@ -271,13 +322,49 @@ export default class StageMask extends Rule {
   }
 
   /**
+   * 页面是否可见
+   * @description 页面未挂载、或画布容器被隐藏（如编辑器切到其他面板）时页面不可见；
+   * 蒙层与页面所在的 iframe 挂载在同一容器中，容器隐藏时页面内部元素仍可能是"可见"的，因此额外判断蒙层；
+   * 浏览器 tab 不可见（切到其他标签页、窗口最小化）时同样视为不可见
+   */
+  private isPageVisible(): boolean {
+    if (!isDocumentVisible(this.page?.ownerDocument) || !isDocumentVisible(this.wrapper.ownerDocument)) return false;
+
+    if (!isElementVisible(this.page)) return false;
+
+    return !this.wrapper.isConnected || isElementVisible(this.wrapper);
+  }
+
+  /**
+   * 从当前页面同步蒙层宽高，并修正滚动偏移
+   */
+  private syncPageSize(): void {
+    if (!this.page?.isConnected) return;
+
+    this.applyPageSize(this.page.clientWidth, this.page.clientHeight);
+  }
+
+  /**
+   * 应用页面尺寸到蒙层；宽高为 0 时忽略，避免切换/布局过程中把 editor-mask 置空
+   */
+  private applyPageSize(clientWidth: number, clientHeight: number): void {
+    if (clientWidth <= 0 || clientHeight <= 0) return;
+
+    this.setHeight(clientHeight);
+    this.setWidth(clientWidth);
+    this.scroll();
+  }
+
+  /**
    * 设置蒙层高度
    * @param height 高度
    */
   private setHeight(height: number): void {
     this.height = height;
     this.setMaxScrollTop();
-    this.content.style.height = `${height}px`;
+    if (this.mode !== Mode.FIXED) {
+      this.content.style.height = `${height}px`;
+    }
   }
 
   /**
@@ -287,7 +374,9 @@ export default class StageMask extends Rule {
   private setWidth(width: number): void {
     this.width = width;
     this.setMaxScrollLeft();
-    this.content.style.width = `${width}px`;
+    if (this.mode !== Mode.FIXED) {
+      this.content.style.width = `${width}px`;
+    }
   }
 
   /**

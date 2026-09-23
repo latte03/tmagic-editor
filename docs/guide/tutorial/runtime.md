@@ -22,7 +22,7 @@ cd editor-runtime
 按钮需要用的ts types依赖
 
 ```bash
-npm install --save @tmagic/schema @tmagic/stage
+npm install --save @tmagic/core @tmagic/stage
 ```
 
 ## 实现runtime
@@ -33,8 +33,8 @@ npm install --save @tmagic/schema @tmagic/stage
 
 ```vue
 <template>
-  <div v-if="config" :id="config.id" :style="style">
-    <div v-for="node in config.items" :key="node.id" :id="node.id">hello world</div>
+  <div v-if="config" :data-tmagic-id="config.id" :style="style">
+    <div v-for="node in config.items" :key="node.id" :data-tmagic-id="node.id">hello world</div>
   </div>
 </template>
 
@@ -178,9 +178,11 @@ declare global {
 }
 ```
 
+> 以下片段中 `page` 来自前文中 App.vue 内的 `const page = ref<any>();`，此处省略其重复声明。
+
 ```ts
+import type { Id, MApp, MNode } from '@tmagic/core';
 import type { RemoveData, UpdateData } from '@tmagic/stage';
-import type { Id, MApp, MNode } from '@tmagic/schema';
 
 const root = ref<MApp>();
 
@@ -228,7 +230,7 @@ watch(page, async () => {
 });
 ```
 
-以上就是一个简单runtime实现，以及与编辑的交互，这是一个不完善的实现(会发现组件再画布中无法自由拖动，是因为没有完整的解析style)，但是其中已经几乎覆盖所有需要关心的内容
+以上就是一个简单runtime实现，以及与编辑的交互，这是一个不完善的实现(会发现组件在画布中无法自由拖动，是因为没有完整的解析style)，但是其中已经几乎覆盖所有需要关心的内容
 
 当前教程中实现了一个简单的page，tmagic提供了一个比较完善的实现，将在下一节介绍
 

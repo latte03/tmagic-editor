@@ -1,0 +1,148 @@
+<template>
+  <teleport to="body" :disabled="!isFullscreen">
+    <div
+      v-bind="$attrs"
+      class="m-fields-table-wrap"
+      :class="{ fixed: isFullscreen }"
+      :style="isFullscreen ? `z-index: ${fullscreenZIndex}` : ''"
+    >
+      <div class="m-fields-table" :class="{ 'm-fields-table-item-extra': config.itemExtra }">
+        <span v-if="config.extra" style="color: rgba(0, 0, 0, 0.45)" v-html="config.extra"></span>
+        <!-- v-if 必须挂在 Tooltip 上：表格未就绪时 ElOnlyChild 会报 no valid child node found -->
+        <TMagicTooltip
+          v-if="model[modelName]"
+          content="拖拽可排序"
+          placement="left-start"
+          :disabled="config.dropSort !== true || config.dropSortHandle"
+        >
+          <TMagicTable
+            ref="tMagicTable"
+            style="width: 100%"
+            show-header
+            :row-key="config.rowKey || 'id'"
+            :columns="columns"
+            :data="data"
+            :border="config.border"
+            :max-height="config.maxHeight"
+            :default-expand-all="true"
+            :key="updateKey"
+            @select="selectHandle"
+            @sort-change="sortChangeHandler"
+            :empty-text="`暂无${config.titlePrefix || ''}数据`"
+          ></TMagicTable>
+        </TMagicTooltip>
+
+        <slot></slot>
+
+        <div style="display: flex; justify-content: space-between; margin: 10px 0">
+          <div style="display: flex">
+            <slot name="toggle-button" v-if="!isFullscreen"></slot>
+            <TMagicButton
+              :icon="FullScreen"
+              size="small"
+              @click="toggleFullscreen"
+              v-if="config.enableFullscreen !== false"
+            >
+              {{ isFullscreen ? '退出全屏' : '全屏编辑' }}
+            </TMagicButton>
+            <TMagicUpload
+              v-if="importable && !isCompare"
+              style="display: inline-block"
+              ref="excelBtn"
+              action="/noop"
+              :disabled="disabled"
+              :on-change="excelHandler"
+              :auto-upload="false"
+            >
+              <TMagicButton size="small" type="success" :disabled="disabled" plain>导入EXCEL</TMagicButton>
+            </TMagicUpload>
+            <TMagicButton
+              v-if="importable && !isCompare"
+              size="small"
+              type="warning"
+              :disabled="disabled"
+              plain
+              @click="clearHandler"
+              >清空</TMagicButton
+            >
+          </div>
+          <slot name="add-button" v-if="!isCompare"></slot>
+        </div>
+
+        <div class="bottom" style="text-align: right" v-if="config.pagination">
+          <TMagicPagination
+            layout="total, sizes, prev, pager, next, jumper"
+            :hide-on-single-page="model[modelName].length < pageSize"
+            :current-page="currentPage + 1"
+            :page-sizes="[pageSize, 60, 120, 300]"
+            :page-size="pageSize"
+            :total="model[modelName].length"
+            @size-change="handleSizeChange"
+            @current-change="handleCurrentChange"
+          >
+          </TMagicPagination>
+        </div>
+      </div>
+    </div>
+  </teleport>
+</template>
+
+<script setup lang="ts">
+import { computed, ref, useTemplateRef } from 'vue';
+import { FullScreen } from '@element-plus/icons-vue';
+
+import { TMagicButton, TMagicPagination, TMagicTable, TMagicTooltip, TMagicUpload } from '@tmagic/design';
+
+import type { SortProp } from '@form/schema';
+import { sortChange } from '@form/utils/form';
+
+import type { TableProps } from './type';
+import { useFullscreen } from './useFullscreen';
+import { useImport } from './useImport';
+import { usePagination } from './usePagination';
+import { useSelection } from './useSelection';
+import { useSortable } from './useSortable';
+import { useTableColumns } from './useTableColumns';
+
+defineOptions({
+  name: 'MFormTable',
+});
+
+const props = withDefaults(defineProps<TableProps>(), {
+  prop: '',
+  sortKey: '',
+  showIndex: true,
+  lastValues: () => ({}),
+  isCompare: false,
+});
+
+const emit = defineEmits(['change', 'select', 'addDiffCount', 'add']);
+
+const modelName = computed(() => props.name || props.config.name || '');
+const tMagicTableRef = useTemplateRef<InstanceType<typeof TMagicTable>>('tMagicTable');
+
+const { pageSize, currentPage, paginationData, handleSizeChange, handleCurrentChange } = usePagination(
+  props,
+  modelName,
+);
+
+const updateKey = ref(1);
+
+const { columns } = useTableColumns(props, emit, currentPage, pageSize, modelName);
+useSortable(props, emit, tMagicTableRef, modelName, updateKey);
+const { isFullscreen, fullscreenZIndex, toggleFullscreen } = useFullscreen();
+
+const { importable, excelHandler, clearHandler } = useImport(props, emit);
+const { selectHandle, toggleRowSelection } = useSelection(props, emit, tMagicTableRef);
+
+const data = computed(() => (props.config.pagination ? paginationData.value : props.model[modelName.value]));
+
+const sortChangeHandler = (sortOptions: SortProp) => {
+  const modelName = props.name || props.config.name || '';
+  sortChange(props.model[modelName], sortOptions);
+};
+
+defineExpose({
+  toggleRowSelection,
+});
+</script>

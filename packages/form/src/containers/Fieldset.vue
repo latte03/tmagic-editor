@@ -1,21 +1,17 @@
 <template>
-  <fieldset
-    v-if="name ? model[name] : model"
-    class="m-fieldset"
-    :style="show ? 'padding: 15px 15px 0 5px;' : 'border: 0'"
-  >
+  <fieldset v-if="name ? model[name] : model" class="m-fieldset" :style="show ? 'padding: 15px' : 'border: 0'">
     <component v-if="name && config.checkbox" :is="!show ? 'div' : 'legend'">
       <TMagicCheckbox
-        v-model="model[name].value"
-        :prop="`${prop}${prop ? '.' : ''}${config.name}.value`"
-        :true-value="1"
-        :false-value="0"
-        @update:modelValue="change"
-        ><span v-html="config.legend"></span><span v-if="config.extra" v-html="config.extra" class="m-form-tip"></span
+        :model-value="(name ? model[name] : model)[checkboxName]"
+        :prop="`${prop}${prop ? '.' : ''}${config.name}.${checkboxName}`"
+        :true-value="checkboxTrueValue"
+        :false-value="checkboxFalseValue"
+        @update:modelValue="valueChangeHandler"
+        ><span v-html="legend"></span><span v-if="config.extra" v-html="config.extra" class="m-form-tip"></span
       ></TMagicCheckbox>
     </component>
     <legend v-else>
-      <span v-html="config.legend"></span>
+      <span v-html="legend"></span>
       <span v-if="config.extra" v-html="config.extra" class="m-form-tip"></span>
     </legend>
 
@@ -32,8 +28,9 @@
           :prop="prop"
           :disabled="disabled"
           :labelWidth="lWidth"
+          :labelPosition="lPosition"
           :size="size"
-          @change="change"
+          @change="changeHandler"
           @add-diff-count="onAddDiffCount()"
         ></Container>
       </div>
@@ -52,9 +49,10 @@
         :config="item"
         :prop="prop"
         :labelWidth="lWidth"
+        :labelPosition="lPosition"
         :size="size"
         :disabled="disabled"
-        @change="change"
+        @change="changeHandler"
         @addDiffCount="onAddDiffCount()"
       ></Container>
     </template>
@@ -66,7 +64,8 @@ import { computed, inject } from 'vue';
 
 import { TMagicCheckbox } from '@tmagic/design';
 
-import { FieldsetConfig, FormState } from '../schema';
+import { ContainerChangeEventData, FieldsetConfig, FormState } from '../schema';
+import { filterFunction } from '../utils/form';
 
 import Container from './Container.vue';
 
@@ -77,6 +76,7 @@ defineOptions({
 const props = withDefaults(
   defineProps<{
     labelWidth?: string;
+    labelPosition?: 'top' | 'left' | 'right';
     prop: string;
     size?: string;
     model: Record<string, any>;
@@ -94,15 +94,44 @@ const props = withDefaults(
   },
 );
 
-const emit = defineEmits(['change', 'addDiffCount']);
+const emit = defineEmits<{
+  change: [v: any, eventData: ContainerChangeEventData];
+  addDiffCount: [];
+}>();
 
 const mForm = inject<FormState | undefined>('mForm');
 
 const name = computed(() => props.config.name || '');
 
+const legend = computed(() => filterFunction<string>(mForm, props.config.legend, props));
+
+const checkboxName = computed(() => {
+  if (typeof props.config.checkbox === 'object' && typeof props.config.checkbox.name === 'string') {
+    return props.config.checkbox.name;
+  }
+
+  return 'value';
+});
+
+const checkboxTrueValue = computed(() => {
+  if (typeof props.config.checkbox === 'object' && typeof props.config.checkbox.trueValue !== 'undefined') {
+    return props.config.checkbox.trueValue;
+  }
+
+  return 1;
+});
+
+const checkboxFalseValue = computed(() => {
+  if (typeof props.config.checkbox === 'object' && typeof props.config.checkbox.falseValue !== 'undefined') {
+    return props.config.checkbox.falseValue;
+  }
+
+  return 0;
+});
+
 const show = computed(() => {
-  if (props.config.expand && name.value) {
-    return props.model[name.value]?.value;
+  if (props.config.expand && checkboxName.value) {
+    return (name.value ? props.model[name.value] : props.model)?.[checkboxName.value] === checkboxTrueValue.value;
   }
   return true;
 });
@@ -114,9 +143,13 @@ const lWidth = computed(() => {
   return props.config.labelWidth || props.labelWidth || (props.config.text ? undefined : '0');
 });
 
-const change = () => {
-  emit('change', props.model);
+const lPosition = computed(() => props.config.labelPosition || props.labelPosition);
+
+const valueChangeHandler = (value: number | boolean) => {
+  emit('change', value, { modifyKey: checkboxName.value });
 };
+
+const changeHandler = (v: any, eventData: ContainerChangeEventData) => emit('change', v, eventData);
 
 const key = (item: any, index: number) => item[mForm?.keyProp || '__key'] ?? index;
 

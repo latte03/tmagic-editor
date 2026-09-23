@@ -1,0 +1,96 @@
+<template>
+  <div class="border-box-container">
+    <div class="border-icon-container">
+      <div class="border-icon-container-row">
+        <div
+          class="border-icon border-icon-top"
+          :class="{ active: direction === 'Top', configured: isConfigured('Top') }"
+          @click="selectDirection('Top')"
+        ></div>
+      </div>
+      <div class="border-icon-container-row">
+        <div
+          class="border-icon border-icon-left"
+          :class="{ active: direction === 'Left', configured: isConfigured('Left') }"
+          @click="selectDirection('Left')"
+        ></div>
+        <div
+          class="border-icon center"
+          :class="{ active: direction === '', configured: isConfigured('') }"
+          @click="selectDirection()"
+        ></div>
+        <div
+          class="border-icon border-icon-right"
+          :class="{ active: direction === 'Right', configured: isConfigured('Right') }"
+          @click="selectDirection('Right')"
+        ></div>
+      </div>
+      <div class="border-icon-container-row">
+        <div
+          class="border-icon border-icon-bottom"
+          :class="{ active: direction === 'Bottom', configured: isConfigured('Bottom') }"
+          @click="selectDirection('Bottom')"
+        ></div>
+      </div>
+    </div>
+    <div class="border-value-container">
+      <MContainer
+        :config="config"
+        :model="model"
+        :last-values="lastValues"
+        :is-compare="isCompare"
+        :size="size"
+        :disabled="disabled"
+        @change="change"
+        @add-diff-count="onAddDiffCount"
+      ></MContainer>
+    </div>
+  </div>
+</template>
+
+<script lang="ts" setup>
+import { computed, ref } from 'vue';
+
+import type { ContainerChangeEventData, FormValue } from '@tmagic/form';
+import { MContainer } from '@tmagic/form';
+import type { StyleSchema } from '@tmagic/schema';
+
+import { createBorderDirectionConfig } from '../configs';
+
+const direction = ref('');
+
+const config = computed(() => createBorderDirectionConfig(direction.value));
+
+const selectDirection = (d?: string) => (direction.value = d || '');
+
+const emit = defineEmits<{
+  change: [v: StyleSchema, eventData: ContainerChangeEventData];
+  addDiffCount: [];
+}>();
+
+const props = withDefaults(
+  defineProps<{
+    model: FormValue;
+    lastValues?: FormValue;
+    isCompare?: boolean;
+    disabled?: boolean;
+    size?: 'large' | 'default' | 'small';
+  }>(),
+  {},
+);
+
+const hasValue = (value: unknown) => value !== undefined && value !== null && value !== '';
+
+const isConfigured = (d: string) =>
+  ['Width', 'Color', 'Style'].some((key) => hasValue(props.model?.[`border${d}${key}`]));
+
+const change = (value: StyleSchema, eventData: ContainerChangeEventData) => {
+  eventData.changeRecords?.forEach((record) => {
+    emit('change', record.value, {
+      modifyKey: record.propPath,
+    });
+  });
+};
+
+const onAddDiffCount = () => emit('addDiffCount');
+</script>

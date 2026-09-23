@@ -1,52 +1,54 @@
 {
-  "version": "1.4.4",
+  "version": "1.8.2",
   "name": "@tmagic/stage",
   "type": "module",
-  "sideEffects": [
-    "dist/*"
-  ],
+  "sideEffects": false,
   "main": "dist/tmagic-stage.umd.cjs",
-  "module": "dist/tmagic-stage.js",
+  "module": "dist/es/index.js",
   "types": "types/index.d.ts",
   "exports": {
     ".": {
       "types": "./types/index.d.ts",
-      "import": "./dist/tmagic-stage.js",
+      "import": "./dist/es/index.js",
       "require": "./dist/tmagic-stage.umd.cjs"
     },
     "./*": "./*"
   },
+  "files": [
+    "dist",
+    "types",
+    "src"
+  ],
   "license": "Apache-2.0",
-  "scripts": {
-    "build": "npm run build:type && vite build",
-    "build:type": "npm run clear:type && tsc --declaration --emitDeclarationOnly --project tsconfig.build.json",
-    "clear:type": "rimraf ./types"
-  },
   "engines": {
     "node": ">=18"
   },
   "repository": {
+    "directory": "packages/stage",
     "type": "git",
     "url": "https://github.com/Tencent/tmagic-editor.git"
   },
   "dependencies": {
     "@scena/guides": "^0.29.2",
-    "@tmagic/core": "1.4.4",
-    "@tmagic/schema": "1.4.4",
-    "@tmagic/utils": "1.4.4",
+    "@zumer/snapdom": "^2.23.2",
     "events": "^3.3.0",
     "keycon": "^1.4.0",
-    "lodash-es": "^4.17.21",
-    "moveable": "^0.51.1",
-    "moveable-helper": "^0.4.0"
+    "lodash-es": "^4.18.1",
+    "moveable": "^0.53.0",
+    "moveable-helper": "^0.4.0",
+    "scenejs": "^1.10.3"
   },
   "devDependencies": {
-    "@types/events": "^3.0.0",
-    "@types/lodash-es": "^4.17.4",
-    "@types/node": "^18.19.0",
-    "rimraf": "^3.0.2",
-    "sass": "^1.35.1",
-    "typescript": "^5.4.2",
-    "vite": "^5.1.6"
+    "@types/events": "^3.0.3",
+    "@types/lodash-es": "^4.17.12"
+  },
+  "peerDependencies": {
+    "@tmagic/core": "workspace:*",
+    "typescript": "catalog:"
+  },
+  "peerDependenciesMeta": {
+    "typescript": {
+      "optional": true
+    }
   }
 }

@@ -1,7 +1,7 @@
 <template>
   <TMagicSelect
     v-if="model"
-    v-model="model[name]"
+    :model-value="model[name]"
     v-loading="loading"
     class="m-select"
     ref="tMagicSelect"
@@ -16,31 +16,38 @@
     :allow-create="config.allowCreate"
     :disabled="disabled"
     :remote-method="config.remote && remoteMethod"
-    @change="changeHandler"
+    @update:model-value="changeHandler"
     @visible-change="visibleHandler"
   >
     <template v-if="config.group">
       <component
-        v-for="(group, index) in (options as SelectGroupOption[])"
+        v-for="(group, index) in options as SelectGroupOption[]"
         :key="index"
-        :is="optionGroupComponent?.component"
+        :is="optionGroupComponent?.component || 'el-option-group'"
         v-bind="
           optionGroupComponent?.props({
             label: group.label,
             disabled: group.disabled,
-          })
+          }) || {
+            label: group.label,
+            disabled: group.disabled,
+          }
         "
       >
         <component
           v-for="(item, index) in group.options"
-          :is="optionComponent?.component"
+          :is="optionComponent?.component || 'el-option'"
           :key="index"
           v-bind="
             optionComponent?.props({
               label: item.label || item.text,
               value: item.value,
               disabled: item.disabled,
-            })
+            }) || {
+              label: item.label || item.text,
+              value: item.value,
+              disabled: item.disabled,
+            }
           "
         >
         </component>
@@ -48,16 +55,20 @@
     </template>
     <template v-else>
       <component
-        v-for="option in (options as SelectOption[])"
+        v-for="option in options as SelectOption[]"
         class="tmagic-design-option"
-        :key="config.valueKey ? option.value[config.valueKey] : option.value"
-        :is="optionComponent?.component"
+        :key="config.valueKey ? option.value?.[config.valueKey] : option.value"
+        :is="optionComponent?.component || 'el-option'"
         v-bind="
           optionComponent?.props({
             label: option.text,
             value: option.value,
             disabled: option.disabled,
-          })
+          }) || {
+            label: option.text,
+            value: option.value,
+            disabled: option.disabled,
+          }
         "
       >
       </component>
@@ -67,9 +78,9 @@
 </template>
 
 <script lang="ts" setup>
-import { inject, nextTick, onBeforeMount, ref, watch, watchEffect } from 'vue';
+import { inject, nextTick, ref, watch, watchEffect } from 'vue';
 
-import { getConfig as getDesignConfig, TMagicSelect } from '@tmagic/design';
+import { getDesignConfig, TMagicSelect } from '@tmagic/design';
 import { getValueByKeyPath } from '@tmagic/utils';
 
 import type { FieldProps, FormState, SelectConfig, SelectGroupOption, SelectOption } from '../schema';
@@ -110,6 +121,26 @@ const equalValue = (value: any, v: any): boolean => {
   }
 
   return value === v;
+};
+
+const hasOption = (value: any): boolean => {
+  const { config } = props;
+
+  if (Array.isArray(value) && !value.length) return true;
+
+  if (config.group) {
+    const groups = options.value as SelectGroupOption[];
+    if (config.multiple && Array.isArray(value)) {
+      return value.every((v) => groups.some((group) => group.options.some((item) => equalValue(item.value, v))));
+    }
+    return groups.some((group) => group.options.some((item) => equalValue(item.value, value)));
+  }
+
+  const opts = options.value as SelectOption[];
+  if (config.multiple && Array.isArray(value)) {
+    return value.every((v) => opts.some((item) => equalValue(item.value, v)));
+  }
+  return opts.some((item) => equalValue(item.value, value));
 };
 
 const mapOptions = (data: any[]) => {
@@ -177,9 +208,12 @@ const getOptions = async () => {
   const requestFuc = getConfig('request') as Function;
 
   if (typeof option.beforeRequest === 'function') {
-    postOptions = option.beforeRequest(mForm, postOptions, {
+    postOptions = await option.beforeRequest(mForm, postOptions, {
       model: props.model,
       formValue: mForm?.values,
+      formValues: mForm?.values,
+      prop: props.prop,
+      config: props.config,
     });
   }
 
@@ -190,11 +224,12 @@ const getOptions = async () => {
   let res = await requestFuc(postOptions);
 
   if (typeof option.afterRequest === 'function') {
-    res = option.afterRequest(mForm, res, {
+    res = await option.afterRequest(mForm, res, {
       model: props.model,
       formValue: mForm?.values,
       formValues: mForm?.values,
       config: props.config,
+      prop: props.prop,
       postOptions,
     });
   }
@@ -255,6 +290,7 @@ const getInitLocalOption = async () => {
   if (config.multiple && value.findIndex) {
     return (localOptions.value as any[]).filter((item) => value.findIndex((v: any) => equalValue(item.value, v)) > -1);
   }
+
   return (localOptions.value as any[]).filter((item) => equalValue(item.value, value));
 };
 
@@ -273,6 +309,14 @@ const getInitOption = async () => {
   let url = option.initUrl;
   if (!url) {
     return getInitLocalOption();
+  }
+
+  if (
+    typeof props.model[props.name] === 'undefined' ||
+    props.model[props.name] === '' ||
+    props.model[props.name] === null
+  ) {
+    return [];
   }
 
   if (typeof url === 'function') {
@@ -301,9 +345,12 @@ const getInitOption = async () => {
   };
 
   if (typeof option.beforeInitRequest === 'function') {
-    postOptions = option.beforeInitRequest(mForm, postOptions, {
+    postOptions = await option.beforeInitRequest(mForm, postOptions, {
       model: props.model,
       formValue: mForm?.values,
+      formValues: mForm?.values,
+      config: props.config,
+      prop: props.prop,
     });
   }
 
@@ -315,16 +362,22 @@ const getInitOption = async () => {
   let res = await requestFuc(postOptions);
 
   if (typeof option.afterRequest === 'function') {
-    res = option.afterRequest(mForm, res, {
+    res = await option.afterRequest(mForm, res, {
       model: props.model,
       formValue: mForm?.values,
       formValues: mForm?.values,
       config: props.config,
+      prop: props.prop,
       postOptions,
     });
   }
 
-  let initData = getValueByKeyPath(initRoot || root, res);
+  let initData: any;
+  try {
+    initData = getValueByKeyPath(initRoot || root, res);
+  } catch {
+    // 响应中不存在 initRoot/root 路径时按无数据处理
+  }
   if (initData) {
     if (!Array.isArray(initData)) {
       initData = [initData];
@@ -340,6 +393,10 @@ const getInitOption = async () => {
   return options;
 };
 
+const setOptions = (data: SelectOption[] | SelectGroupOption[]) => {
+  options.value = data;
+};
+
 if (typeof props.config.options === 'function') {
   watchEffect(() => {
     typeof props.config.options === 'function' &&
@@ -352,23 +409,34 @@ if (typeof props.config.options === 'function') {
           config: props.config,
         }),
       ).then((data) => {
-        options.value = data;
+        setOptions(data);
       });
   });
 } else if (Array.isArray(props.config.options)) {
   watchEffect(() => {
-    options.value = props.config.options as SelectOption[] | SelectGroupOption[];
+    setOptions(props.config.options as SelectOption[] | SelectGroupOption[]);
   });
 } else if (props.config.option) {
-  onBeforeMount(() => {
+  const initOption = async () => {
     if (!props.model) return;
     const v = props.model[props.name];
-    if (Array.isArray(v) ? v.length : typeof v !== 'undefined') {
-      getInitOption().then((data) => {
-        options.value = data;
-      });
+    if (Array.isArray(v) ? !v.length : typeof v === 'undefined') return;
+    if (typeof v === 'undefined' || hasOption(v)) return;
+    try {
+      const data = await getInitOption();
+      setOptions(data);
+    } catch {
+      setOptions([]);
     }
-  });
+  };
+
+  watch(
+    () => props.model?.[props.name],
+    () => {
+      void initOption();
+    },
+    { immediate: true },
+  );
 }
 
 if (props.config.remote) {
@@ -394,7 +462,7 @@ if (props.config.remote) {
         }
         moreLoadingVisible.value = true;
         pgIndex.value += 1;
-        options.value = await getOptions();
+        setOptions(await getOptions());
         moreLoadingVisible.value = false;
       });
     },
@@ -419,7 +487,7 @@ const visibleHandler = async (visible: boolean) => {
     tMagicSelect.value.setPreviousQuery(query.value);
     tMagicSelect.value.setSelectedLabel(query.value);
   } else if (options.value.length <= (props.config.multiple ? props.model?.[props.name].length : 1)) {
-    options.value = await getOptions();
+    setOptions(await getOptions());
   }
 };
 
@@ -427,7 +495,7 @@ const remoteMethod = async (q: string) => {
   if (!localOptions.value.length) {
     query.value = q;
     pgIndex.value = 0;
-    options.value = await getOptions();
+    setOptions(await getOptions());
     // 多选时如果过滤选项会导致已选好的标签异常，需要重新刷新一下el-select的状态
     if (props.config.multiple)
       setTimeout(() => {
@@ -435,4 +503,9 @@ const remoteMethod = async (q: string) => {
       }, 0);
   }
 };
+
+defineExpose({
+  options,
+  setOptions,
+});
 </script>

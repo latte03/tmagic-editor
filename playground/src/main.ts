@@ -1,7 +1,7 @@
 /*
  * Tencent is pleased to support the open source community by making TMagicEditor available.
  *
- * Copyright (C) 2023 THL A29 Limited, a Tencent company.  All rights reserved.
+ * Copyright (C) 2025 Tencent.  All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,23 +17,17 @@
  */
 
 import { createApp } from 'vue';
-import * as monaco from 'monaco-editor';
-import EditorWorker from 'monaco-editor/esm/vs/editor/editor.worker?worker';
-import CssWorker from 'monaco-editor/esm/vs/language/css/css.worker?worker';
-import HtmlWorker from 'monaco-editor/esm/vs/language/html/html.worker?worker';
-import JsonWorker from 'monaco-editor/esm/vs/language/json/json.worker?worker';
-import TsWorker from 'monaco-editor/esm/vs/language/typescript/ts.worker?worker';
+import EditorWorker from 'monaco-editor/editor/editor.worker.js?worker';
+import CssWorker from 'monaco-editor/language/css/css.worker.js?worker';
+import HtmlWorker from 'monaco-editor/language/html/html.worker.js?worker';
+import JsonWorker from 'monaco-editor/language/json/json.worker.js?worker';
+import TsWorker from 'monaco-editor/language/typescript/ts.worker.js?worker';
 
-import TMagicDesign from '@tmagic/design';
-import MagicEditor from '@tmagic/editor';
-import MagicElementPlusAdapter from '@tmagic/element-plus-adapter';
-import MagicForm from '@tmagic/form';
+import editorPlugin from '@tmagic/editor';
 
 import App from './App.vue';
 import router from './route';
-
-import 'element-plus/dist/index.css';
-import '@tmagic/editor/src/theme/index.scss';
+import { DEFAULT_THEME, loadTheme } from './theme-loader';
 
 // @ts-ignore
 globalThis.MonacoEnvironment = {
@@ -54,11 +48,22 @@ globalThis.MonacoEnvironment = {
   },
 };
 
-monaco.languages.typescript.typescriptDefaults.setEagerModelSync(true);
+const adapter = sessionStorage.getItem('tmagic-playground-ui-adapter') || 'element-plus';
+const theme = sessionStorage.getItem('tmagic-playground-theme') || DEFAULT_THEME;
 
-const app = createApp(App);
-app.use(router);
-app.use(TMagicDesign, MagicElementPlusAdapter);
-app.use(MagicEditor);
-app.use(MagicForm);
-app.mount('#app');
+let adapterModule;
+
+if (adapter === 'tdesign-vue-next') {
+  import('tdesign-vue-next/es/style/index.css');
+  adapterModule = import('@tmagic/tdesign-vue-next-adapter');
+} else {
+  import('element-plus/dist/index.css');
+  adapterModule = import('@tmagic/element-plus-adapter');
+}
+
+Promise.all([adapterModule, loadTheme(theme)]).then(([module]) => {
+  const app = createApp(App);
+  app.use(router);
+  app.use(editorPlugin, { ...module.default, flat: theme !== DEFAULT_THEME });
+  app.mount('#app');
+});

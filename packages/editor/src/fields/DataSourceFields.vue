@@ -1,17 +1,19 @@
 <template>
   <div class="m-editor-data-source-fields">
-    <MagicTable :data="model[name]" :columns="fieldColumns"></MagicTable>
+    <MagicTable :data="model[name]" :columns="displayColumns" :border="true"></MagicTable>
 
-    <div class="m-editor-data-source-fields-footer">
+    <div v-if="!isCompare" class="m-editor-data-source-fields-footer">
       <TMagicButton size="small" :disabled="disabled" plain @click="newFromJsonHandler()">快速添加</TMagicButton>
       <TMagicButton size="small" type="primary" :disabled="disabled" plain @click="newHandler()">添加</TMagicButton>
     </div>
 
     <FloatingBox
+      :body-style="{ padding: '0 16px' }"
       v-model:visible="addDialogVisible"
       v-model:width="width"
       v-model:height="editorHeight"
       :title="fieldTitle"
+      :framework-width="frameworkWidth"
       :position="boxPosition"
     >
       <template #body>
@@ -28,10 +30,12 @@
     </FloatingBox>
 
     <FloatingBox
+      :body-style="{ padding: '0 16px' }"
       v-model:visible="addFromJsonDialogVisible"
       v-model:width="width"
       v-model:height="editorHeight"
       title="快速添加数据定义"
+      :framework-width="frameworkWidth"
       :position="boxPosition"
     >
       <template #body>
@@ -47,37 +51,46 @@
 </template>
 
 <script setup lang="ts">
-import { inject, Ref, ref } from 'vue';
+import { computed, type ComputedRef, inject, onMounted, provide, Ref, ref } from 'vue';
 
+import type { DataSchema } from '@tmagic/core';
 import { TMagicButton, tMagicMessage, tMagicMessageBox } from '@tmagic/design';
-import { type FieldProps, type FormConfig, type FormState, MFormBox } from '@tmagic/form';
-import type { DataSchema } from '@tmagic/schema';
+import {
+  type CodeConfig,
+  type ContainerChangeEventData,
+  type DataSourceFieldsConfig,
+  type FieldProps,
+  type FormConfig,
+  type FormState,
+  MFormBox,
+  type NumberConfig,
+  type TextConfig,
+} from '@tmagic/form';
 import { type ColumnConfig, MagicTable } from '@tmagic/table';
 import { getDefaultValueFromFields } from '@tmagic/utils';
 
 import FloatingBox from '@editor/components/FloatingBox.vue';
 import { useEditorContentHeight } from '@editor/hooks';
 import { useNextFloatBoxPosition } from '@editor/hooks/use-next-float-box-position';
-import type { Services } from '@editor/type';
+import { useServices } from '@editor/hooks/use-services';
+import { error } from '@editor/utils/logger';
 
 defineOptions({
   name: 'MFieldsDataSourceFields',
 });
 
-const props = withDefaults(
-  defineProps<
-    FieldProps<{
-      type: 'data-source-fields';
-    }>
-  >(),
-  {
-    disabled: false,
-  },
-);
+const props = withDefaults(defineProps<FieldProps<DataSourceFieldsConfig>>(), {
+  disabled: false,
+});
 
-const emit = defineEmits(['change']);
+const emit = defineEmits<{
+  change: [v: any, eventData?: ContainerChangeEventData];
+}>();
 
-const services = inject<Services>('services');
+const { uiService } = useServices();
+const mForm = inject<FormState | undefined>('mForm');
+/** 对比模式下隐藏新增/编辑/删除等操作按钮，仅保留只读展示。 */
+const isCompare = computed(() => Boolean(mForm?.isCompare));
 
 const fieldValues = ref<Record<string, any>>({});
 const fieldTitle = ref('');
@@ -91,16 +104,39 @@ const newHandler = () => {
   addDialogVisible.value = true;
 };
 
-const fieldChange = ({ index, ...value }: Record<string, any>) => {
-  if (index > -1) {
-    props.model[props.name][index] = value;
-  } else {
-    props.model[props.name].push(value);
-  }
+const editField = (row: Record<string, any>, index: number) => {
+  fieldValues.value = {
+    ...row,
+    index,
+  };
+  fieldTitle.value = `编辑${row.title}`;
+  calcBoxPosition();
+  addDialogVisible.value = true;
+};
 
+const fieldChange = ({ index, ...value }: Record<string, any>, data: ContainerChangeEventData) => {
   addDialogVisible.value = false;
 
-  emit('change', props.model[props.name]);
+  if (index > -1) {
+    emit('change', value, {
+      modifyKey: index,
+      changeRecords: (data.changeRecords || []).map((item) => ({
+        propPath: `${props.prop}.${index}.${item.propPath}`,
+        value: item.value,
+      })),
+    });
+  } else {
+    const modifyKey = props.model[props.name].length;
+    emit('change', value, {
+      modifyKey,
+      changeRecords: [
+        {
+          propPath: `${props.prop}.${modifyKey}`,
+          value,
+        },
+      ],
+    });
+  }
 };
 
 const fieldColumns: ColumnConfig[] = [
@@ -123,6 +159,7 @@ const fieldColumns: ColumnConfig[] = [
       try {
         return JSON.stringify(row.defaultValue);
       } catch (e) {
+        error(e);
         return row.defaultValue;
       }
     },
@@ -134,13 +171,7 @@ const fieldColumns: ColumnConfig[] = [
       {
         text: '编辑',
         handler: (row: Record<string, any>, index: number) => {
-          fieldValues.value = {
-            ...row,
-            index,
-          };
-          fieldTitle.value = `编辑${row.title}`;
-          calcBoxPosition();
-          addDialogVisible.value = true;
+          editField(row, index);
         },
       },
       {
@@ -155,6 +186,11 @@ const fieldColumns: ColumnConfig[] = [
     ],
   },
 ];
+
+/** 对比模式下移除「操作」列（编辑/删除按钮），仅保留只读列。 */
+const displayColumns = computed<ColumnConfig[]>(() =>
+  isCompare.value ? fieldColumns.filter((col) => !col.actions) : fieldColumns,
+);
 
 const dataSourceFieldsConfig: FormConfig = [
   { name: 'index', type: 'hidden', filter: 'number', defaultValue: -1 },
@@ -172,6 +208,12 @@ const dataSourceFieldsConfig: FormConfig = [
       { text: 'null', value: 'null' },
       { text: 'any', value: 'any' },
     ],
+    onChange: (_formState, v: string, { setModel }) => {
+      if (!['any', 'array', 'object'].includes(v)) {
+        setModel('fields', []);
+      }
+      return v;
+    },
   },
   {
     name: 'name',
@@ -210,8 +252,8 @@ const dataSourceFieldsConfig: FormConfig = [
   {
     name: 'defaultValue',
     text: '默认值',
-    height: '200px',
     parse: true,
+    mFormItemType: 'data-source-field-defaultValue',
     type: (mForm: FormState | undefined, { model }: any) => {
       if (model.type === 'number') return 'number';
       if (model.type === 'boolean') return 'select';
@@ -219,11 +261,12 @@ const dataSourceFieldsConfig: FormConfig = [
 
       return 'vs-code';
     },
+    autosize: { minRows: 1, maxRows: 30 },
     options: [
       { text: 'true', value: true },
       { text: 'false', value: false },
     ],
-  },
+  } as unknown as CodeConfig | NumberConfig | TextConfig,
   {
     name: 'enable',
     text: '是否可用',
@@ -244,7 +287,7 @@ const jsonFromConfig: FormConfig = [
     type: 'vs-code',
     labelWidth: '0',
     language: 'json',
-    height: '600px',
+    autosize: { minRows: 30, maxRows: 50 },
     options: inject('codeOptions', {}),
   },
 ];
@@ -304,11 +347,9 @@ const addFromJsonFromChange = ({ data }: { data: string }) => {
   try {
     const value = JSON.parse(data);
 
-    props.model[props.name] = getFieldsConfig(value, props.model[props.name]);
-
     addFromJsonDialogVisible.value = false;
 
-    emit('change', props.model[props.name]);
+    emit('change', getFieldsConfig(value, props.model[props.name]));
   } catch (e: any) {
     tMagicMessage.error(e.message);
   }
@@ -319,5 +360,31 @@ const addFromJsonDialogVisible = defineModel<boolean>('visible1', { default: fal
 const { height: editorHeight } = useEditorContentHeight();
 
 const parentFloating = inject<Ref<HTMLDivElement | null>>('parentFloating', ref(null));
-const { boxPosition, calcBoxPosition } = useNextFloatBoxPosition(services?.uiService, parentFloating);
+const { boxPosition, calcBoxPosition } = useNextFloatBoxPosition(uiService, parentFloating);
+const frameworkWidth = computed(() => uiService.get('frameworkRect')?.width || 0);
+
+/**
+ * 由 DataSourceConfigPanel 注入：打开数据源详情后需要直接打开的字段路径（字段名数组）。
+ * 当前层消费 path[0]，并把剩余路径下发给嵌套字段，实现逐层打开。
+ */
+const editingFieldPath = inject<ComputedRef<string[]>>(
+  'editingDataSourceFieldPath',
+  computed(() => []),
+);
+
+provide(
+  'editingDataSourceFieldPath',
+  computed(() => editingFieldPath.value.slice(1)),
+);
+
+onMounted(() => {
+  const path = editingFieldPath.value;
+  if (!path.length) return;
+
+  const fields: Record<string, any>[] = props.model[props.name] || [];
+  const index = fields.findIndex((field) => field.name === path[0]);
+  if (index === -1) return;
+
+  editField(fields[index], index);
+});
 </script>

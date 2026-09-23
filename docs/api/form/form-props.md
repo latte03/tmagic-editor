@@ -2,70 +2,144 @@
 
 ## config
 
-- **详情：**  表单配置
+- **详情：** 表单配置
 
 - **默认值：** `[]`
 
-- **类型：** [FormConfig](https://github.com/Tencent/tmagic-editor/blob/c143a5f7670ae61d80c1a2cfcc780cfb5259849d/packages/form/src/schema.ts#L706)
+- **类型：** `FormConfig`
+
+  ::: details 查看 FormConfig 及关联类型定义
+  <<< @/../packages/form-schema/src/base.ts#FormConfig{ts}
+
+  <<< @/../packages/form-schema/src/base.ts#FormItemConfig{ts}
+
+  <<< @/../packages/form-schema/src/base.ts#ChildConfig{ts}
+
+  <<< @/../packages/form-schema/src/base.ts#DynamicTypeConfig{ts}
+
+  <<< @/../packages/form-schema/src/base.ts#FormItem{ts}
+  :::
 
 - **示例：**
-  
+
 ```html
 <template>
   <m-form-dialog :config="config"></m-form-dialog>
 </template>
 
 <script setup>
-import { ref } from 'Vue';
+  import { ref } from "Vue";
 
-const config = ref([
-  {
-    name: 'text',
-    text: '文本',
-  },
-  {
-    name: 'multiple',
-    text: '多行文本',
-    type: 'switch',
-  },
-]);
+  const config = ref([
+    {
+      name: "text",
+      text: "文本",
+    },
+    {
+      name: "multiple",
+      text: "多行文本",
+      type: "switch",
+    },
+  ]);
 </script>
 ```
 
 ## initValues
 
-- **详情：**  表单初始化值
+- **详情：** 表单初始化值
 
 - **默认值：** `{}`
 
 - **类型：** `Object`
 
 - **示例：**
-  
+
 ```html
 <template>
   <m-form-dialog :init-values="initValues"></m-form-dialog>
 </template>
 
 <script setup>
-import { ref } from 'Vue';
+  import { ref } from 'Vue';
 
-const initValues = ref([
-  text: 'text',
-  multiply: true,
-]);
+  const initValues = ref([
+    text: 'text',
+    multiply: true,
+  ]);
 </script>
 ```
 
+## lastValues
+
+- **详情：** 需对比的值（开启对比模式时传入）
+
+- **默认值：** `{}`
+
+- **类型：** `Object`
+
+## isCompare
+
+- **详情：** 是否开启对比模式
+
+- **默认值：** `false`
+
+- **类型：** `boolean`
+
+## showDiff
+
+- **详情：**
+
+  自定义“是否展示对比内容”的判断函数（仅在 `isCompare === true` 时生效）。
+
+  - 不传：使用默认逻辑 `!isEqual(curValue, lastValue)`（基于 lodash `isEqual`）；
+  - 传函数：完全以函数返回值为准，返回 `true` 才展示前后两份对比内容。
+
+  该 prop 通过 `formState` 透传到所有层级的 Container 中，调用方只需在 MForm 这一层传一次即可对整棵表单生效。
+
+  典型场景：某些字段语义上相等但结构不同（例如 `code-select` 字段中 `''` 与 `{ hookType: 'code', hookData: [] }` 应视为相等），调用方在此处显式声明，避免被 `isEqual` 误判为差异。
+
+- **类型：** `(data: { curValue: any; lastValue: any; config: FormItemConfig }) => boolean`
+
+- **示例：**
+
+```html
+<template>
+  <m-form :config="config" :is-compare="true" :last-values="lastValues" :show-diff="showDiff"></m-form>
+</template>
+
+<script setup>
+  import { isEqual } from 'lodash-es';
+
+  const showDiff = ({ curValue, lastValue, config }) => {
+    if (config?.type === 'code-select') {
+      // 业务侧自定义：双方都是“空形态”视为相等，不展示对比
+      const isEmpty = (v) =>
+        v === '' || v === undefined || v === null ||
+        (typeof v === 'object' && v.hookType === 'code' && Array.isArray(v.hookData) && v.hookData.length === 0);
+      if (isEmpty(curValue) && isEmpty(lastValue)) return false;
+    }
+    return !isEqual(curValue, lastValue);
+  };
+</script>
+```
+
+## parentValues
+
+- **详情：** 父级表单值
+
+- **默认值：** `{}`
+
+- **类型：** `Object`
+
 ## labelWidth
 
-- **详情：** 
+- **详情：**
 
 表单域标签的宽度，例如 '50px'。 作为 Form 直接子元素的 form-item 会继承该值。 支持 auto
 
 - **默认值：** `'200px'`
 
-- **类型：** `string | number`
+- **类型：** `string`
 
 ## disabled
 
@@ -73,31 +147,23 @@ const initValues = ref([
 
 - **默认值：** false
 
-- **类型：**  `boolean`
+- **类型：** `boolean`
 
 ## height
 
-- **详情：**
-  
-  
+- **详情：** 表单容器的高度，会作为内联样式 `height` 应用到表单根元素上
 
-- **默认值：** 
+- **默认值：** `'auto'`
 
-
-
-- **类型：** 
+- **类型：** `string`
 
 ## stepActive
 
-- **详情：**
-  
-  
+- **详情：** 当表单包含 step 容器时，控制当前激活的步骤
 
-- **默认值：** 
+- **默认值：** `1`
 
-
-
-- **类型：** 
+- **类型：** `string | number`
 
 ## size
 
@@ -105,10 +171,9 @@ const initValues = ref([
 
 - **类型：** `'small' | 'default' | 'large'`
 
-
 ## inline
 
-- **详情：** 行内表单模式	
+- **详情：** 行内表单模式
 
 - **默认值：** false
 
@@ -117,10 +182,9 @@ const initValues = ref([
 ## labelPosition
 
 - **详情：** 表单域标签的位置， 当设置为 left 或 right 时，则也需要设置 label-width 属性
-  
-- **默认值：**  ’right'
+- **默认值：** `'right'`
 
-- **类型：** `'left' | 'right' | 'top`
+- **类型：** `string`
 
 ## keyProp
 
@@ -135,3 +199,45 @@ const initValues = ref([
 - **详情：** tooltip弹出层的class
 
 - **类型：** `string`
+
+## preventSubmitDefault
+
+- **详情：** 是否阻止表单原生 submit 事件的默认行为
+
+- **类型：** `boolean`
+
+## useFieldTextInError
+
+- **详情：**
+
+  表单校验失败时，错误提示前缀是否使用字段的 `text` 文案（通过 `getTextByName` 从 `config` 中查找）。
+
+  - `true`（默认）：错误提示形如 `字段文案 -> 错误信息`，找不到 `text` 时回退为字段 `name`；
+  - `false`：跳过查找，直接使用字段 `name` 作为错误提示前缀（形如 `字段name -> 错误信息`）。
+
+- **默认值：** `true`
+
+- **类型：** `boolean`
+
+## context
+
+- **详情：** 宿主业务上下文。可用本 prop 直接传，也可由祖先 `provide(FORM_CONTEXT_KEY)` 下发；同名字段本 prop 优先。
+
+  嵌套表单（Link 的子表单、`MFormBox`、`MFormDialog`）会自动继承最近祖先的 context，不需要层层透传。
+
+  配置回调统一通过第一个参数 `mForm` 读取：formState 是一个读穿 Proxy，`mForm` 上找不到的字段会自动落到 context。回调签名因此保持不变，后端 eval 下发的存量配置无需改动。
+
+- **类型：** `FormContext`
+
+- **示例：**
+
+```ts
+// 模板：<m-form :context="formContext" />
+const formContext = computed(() => ({ username: store.username }));
+
+// 配置回调：mForm.username 读穿到 context
+{
+  display: (mForm) => mForm.username === 'admin',
+}
+```
+

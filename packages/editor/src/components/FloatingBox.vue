@@ -1,7 +1,13 @@
 <template>
   <Teleport to="body" v-if="visible">
-    <div ref="target" class="m-editor-float-box" :style="{ ...style, zIndex: curZIndex }" @mousedown="nextZIndex">
-      <div ref="titleEl" class="m-editor-float-box-title">
+    <div
+      ref="target"
+      :class="['m-editor-float-box', themeClass]"
+      v-bind="$attrs"
+      :style="{ ...style, zIndex: curZIndex }"
+      @mousedown="nextZIndex"
+    >
+      <div ref="title" class="m-editor-float-box-title">
         <slot name="title">
           <span>{{ title }}</span>
         </slot>
@@ -9,7 +15,7 @@
           <TMagicButton link size="small" @click="closeHandler"><MIcon :icon="Close"></MIcon></TMagicButton>
         </div>
       </div>
-      <div class="m-editor-float-box-body" :style="{ height: `${bodyHeight}px` }">
+      <div class="m-editor-float-box-body" :style="{ height: `${bodyHeight}px`, ...bodyStyle }">
         <slot name="body"></slot>
       </div>
     </div>
@@ -17,14 +23,13 @@
 </template>
 
 <script setup lang="ts">
-import { computed, inject, nextTick, onBeforeUnmount, provide, ref, watch } from 'vue';
+import { computed, type CSSProperties, nextTick, onBeforeUnmount, provide, ref, useTemplateRef, watch } from 'vue';
 import { Close } from '@element-plus/icons-vue';
 import VanillaMoveable from 'moveable';
 
-import { TMagicButton, useZIndex } from '@tmagic/design';
+import { TMagicButton, useThemeClass, useZIndex } from '@tmagic/design';
 
 import MIcon from '@editor/components/Icon.vue';
-import type { Services } from '@editor/type';
 
 interface Position {
   left: number;
@@ -39,16 +44,29 @@ const props = withDefaults(
   defineProps<{
     position?: Position;
     title?: string;
-    beforeClose?: (done: (cancel?: boolean) => void) => void;
+    bodyStyle?: CSSProperties;
+    /** 浮窗初始样式，会与内部计算样式合并，外部传入优先 */
+    initialStyle?: CSSProperties;
+    /** 用于约束浮窗 left 的容器宽度，传入时按宽度收敛 left，避免超出右边界；默认取视窗宽度 */
+    frameworkWidth?: number;
+    beforeClose?: (_done: (_cancel?: boolean) => void) => void;
   }>(),
   {
     title: '',
     position: () => ({ left: 0, top: 0 }),
+    initialStyle: () => ({}),
+    frameworkWidth: 0,
   },
 );
 
-const target = ref<HTMLDivElement>();
-const titleEl = ref<HTMLDivElement>();
+const targetEl = useTemplateRef<HTMLDivElement>('target');
+const titleEl = useTemplateRef<HTMLDivElement>('title');
+
+/**
+ * 主题修饰类（来自最近的 `<MEditor>` / `<MForm>` 祖先 provide）。
+ * 挂在 `Teleport` 出去的浮动面板根节点上，让主题级 CSS 变量在 portal 节点上也能命中。
+ */
+const themeClass = useThemeClass();
 
 const zIndex = useZIndex();
 const curZIndex = ref<number>(0);
@@ -59,19 +77,18 @@ const bodyHeight = computed(() => {
     return height.value - titleHeight.value;
   }
 
-  if (target.value) {
-    return target.value.clientHeight - titleHeight.value;
+  if (targetEl.value) {
+    return targetEl.value.clientHeight - titleHeight.value;
   }
 
   return 'auto';
 });
 
-const services = inject<Services>('services');
-const frameworkWidth = computed(() => services?.uiService.get('frameworkRect').width || 0);
 const style = computed(() => {
   let { left } = props.position;
-  if (width.value) {
-    left = left + width.value > frameworkWidth.value ? frameworkWidth.value - width.value : left;
+  const frameworkWidth = props.frameworkWidth || globalThis.window?.innerWidth || 0;
+  if (width.value && frameworkWidth) {
+    left = left + width.value > frameworkWidth ? frameworkWidth - width.value : left;
   }
 
   return {
@@ -79,15 +96,64 @@ const style = computed(() => {
     top: `${props.position.top}px`,
     width: width.value ? `${width.value}px` : 'auto',
     height: height.value ? `${height.value}px` : 'auto',
+    ...props.initialStyle,
   };
 });
 
 let moveable: VanillaMoveable | null = null;
 
+// 拖拽/缩放时用于覆盖 iframe 的遮罩，防止鼠标进入 iframe 区域后事件被 iframe 吞掉导致拖拽丢失
+let dragMask: HTMLDivElement | null = null;
+let dragMaskVisible = false;
+
+// 兜底：正常情况下遮罩由 moveable 的 dragEnd/resizeEnd 移除；但某些极端场景
+// （拖拽中鼠标移出窗口后松开、alt-tab 切走窗口失焦、标签页被隐藏等）结束事件不会触发，
+// 会导致全屏透明遮罩残留、整个编辑器无法点击。这里挂全局 pointerup/blur/visibilitychange 强制收尾。
+const bindDragMaskSafety = () => {
+  globalThis.window?.addEventListener('pointerup', hideDragMask, true);
+  globalThis.window?.addEventListener('blur', hideDragMask);
+  globalThis.document?.addEventListener('visibilitychange', hideDragMask);
+};
+
+const unbindDragMaskSafety = () => {
+  globalThis.window?.removeEventListener('pointerup', hideDragMask, true);
+  globalThis.window?.removeEventListener('blur', hideDragMask);
+  globalThis.document?.removeEventListener('visibilitychange', hideDragMask);
+};
+
+const showDragMask = () => {
+  if (dragMaskVisible) {
+    return;
+  }
+  if (!dragMask) {
+    dragMask = globalThis.document.createElement('div');
+    dragMask.className = 'm-editor-float-box-drag-mask';
+  }
+  globalThis.document.body.appendChild(dragMask);
+  dragMaskVisible = true;
+  bindDragMaskSafety();
+
+  // 拖拽标题时，root 上的 @mousedown="nextZIndex" 会把浮窗 z-index 抬高，
+  // 若此时才读取会拿到旧值导致遮罩被浮窗（及其内部 iframe）盖住，故用 nextTick 在 z-index 稳定后再设置到浮窗之上
+  const setMaskZIndex = () => {
+    if (dragMask) {
+      dragMask.style.zIndex = `${curZIndex.value + 1}`;
+    }
+  };
+  setMaskZIndex();
+  nextTick(setMaskZIndex);
+};
+
+const hideDragMask = () => {
+  unbindDragMaskSafety();
+  dragMask?.parentNode?.removeChild(dragMask);
+  dragMaskVisible = false;
+};
+
 const initMoveable = () => {
   moveable = new VanillaMoveable(globalThis.document.body, {
     className: 'm-editor-floating-box-moveable',
-    target: target.value,
+    target: targetEl.value,
     draggable: true,
     resizable: true,
     edge: true,
@@ -100,6 +166,14 @@ const initMoveable = () => {
     controlPadding: 10,
     bounds: { left: 0, top: 0, right: 0, bottom: 0, position: 'css' },
   });
+
+  // 仅在真正发生拖拽/缩放位移时插入遮罩：moveable 的 dragStart/resizeStart 在 mousedown 时即触发，
+  // 若此时就盖遮罩，会盖住浮窗本身导致 mouseup 落在遮罩上、关闭按钮的 click 无法触发（点击关闭不了）。
+  // 改为在 drag/resize（实际位移）时才显示，纯点击不再触发遮罩。
+  moveable.on('drag', showDragMask);
+  moveable.on('resize', showDragMask);
+  moveable.on('dragEnd', hideDragMask);
+  moveable.on('resizeEnd', hideDragMask);
 
   moveable.on('drag', (e) => {
     e.target.style.transform = e.transform;
@@ -115,6 +189,7 @@ const initMoveable = () => {
 };
 
 const destroyMoveable = () => {
+  hideDragMask();
   moveable?.destroy();
   moveable = null;
 };
@@ -126,7 +201,7 @@ watch(
       await nextTick();
       curZIndex.value = zIndex.nextZIndex();
 
-      const targetRect = target.value?.getBoundingClientRect();
+      const targetRect = targetEl.value?.getBoundingClientRect();
       if (targetRect) {
         width.value = targetRect.width;
         height.value = targetRect.height;
@@ -168,11 +243,11 @@ const nextZIndex = () => {
   curZIndex.value = zIndex.nextZIndex();
 };
 
-provide('parentFloating', target);
+provide('parentFloating', targetEl);
 
 defineExpose({
   bodyHeight,
-  target,
+  target: targetEl,
   titleEl,
 });
 </script>
